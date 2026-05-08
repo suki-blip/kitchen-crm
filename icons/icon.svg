@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fbf8f0"/>
+      <stop offset="1" stop-color="#ece5d0"/>
+    </linearGradient>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c79b3d"/>
+      <stop offset="1" stop-color="#a87514"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="96" fill="url(#bg)"/>
+  <g transform="translate(256 220)">
+    <path d="M0 -110 L110 0 L0 110 L-110 0 Z" fill="url(#g)" stroke="#8a5e0e" stroke-width="2"/>
+  </g>
+  <text x="256" y="430" text-anchor="middle" font-family="Helvetica, Arial, sans-serif" font-size="58" font-weight="700" letter-spacing="6" fill="#a87514">MAKO</text>
+</svg>

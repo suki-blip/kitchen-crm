@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#c79b3d"/>
+      <stop offset="1" stop-color="#a87514"/>
+    </linearGradient>
+  </defs>
+  <!-- Maskable: solid color across the full 512x512 (safe area is the inner 80%) -->
+  <rect width="512" height="512" fill="#fbf8f0"/>
+  <g transform="translate(256 256)">
+    <path d="M0 -100 L100 0 L0 100 L-100 0 Z" fill="url(#g)"/>
+  </g>
+</svg>

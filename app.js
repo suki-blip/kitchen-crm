@@ -957,7 +957,8 @@ function markDealClosed(p) {
   if (!p.quote.approvedAt) p.quote.approvedAt = new Date().toISOString();
   saveStore();
   toast('Moved to Active Projects');
-  navigate('projects/' + p.id);
+  // After closing the deal, prompt for follow-up tasks before navigating.
+  openProjectTaskWizard(p, () => navigate('projects/' + p.id));
 }
 
 // ----- Projects list (active phase) -----
@@ -965,7 +966,7 @@ function markDealClosed(p) {
 function renderProjectsList() {
   const wrap = h('div');
   wrap.appendChild(topbar(['Projects'], [
-    h('button', { class: 'btn btn-primary', onclick: openNewLead }, [icon('plus'), 'New Lead']),
+    h('button', { class: 'btn btn-primary', onclick: openNewProject }, [icon('plus'), 'New Project']),
   ]));
 
   const content = h('div', { class: 'content' });
@@ -1318,13 +1319,232 @@ async function createProject(data) {
     address: data.address || '',
     source: data.source || '',
     assignedTo: data.assignedTo || state.session.userId,
-    stage: 'lead',
+    stage: data.stage || 'lead',
     spec: defaultSpec(),
     subProducts: [],
     serviceTickets: [],
   });
-  logActivity(p.id, 'Lead created');
+  logActivity(p.id, (data.stage && data.stage !== 'lead') ? 'Project created at stage ' + data.stage : 'Lead created');
   return p;
+}
+
+// ----- New Project (active phase, with optional task wizard) -----
+
+function openNewProject() {
+  // Three modes: 'fromLead' / 'existingCustomer' / 'newCustomer'
+  const mode = { value: 'fromLead' };
+
+  const tabs = h('div', { style: 'display:flex; gap:6px; margin-bottom:14px; border-bottom:1px solid var(--line);' });
+  const tabLead = h('div', { class: 'tab active', onclick: () => setMode('fromLead') }, ['From a lead']);
+  const tabEx   = h('div', { class: 'tab', onclick: () => setMode('existingCustomer') }, ['Existing customer']);
+  tabs.appendChild(tabLead);
+  tabs.appendChild(tabEx);
+  const tabNew  = h('div', { class: 'tab', onclick: () => setMode('newCustomer') }, ['New customer']);
+  tabs.appendChild(tabNew);
+
+  // ----- From-lead section -----
+  const leadSection = h('div');
+  const openLeads = state.store.projects.filter(p => stagePhase(p.stage) === 'lead');
+  const leadSel = h('select', {}, [
+    h('option', { value: '' }, ['Select a lead…']),
+    ...openLeads.slice().sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||'')).map(p => {
+      const c = customerOf(p);
+      const label = (c?.name || 'Customer') + ' · ' + (p.address || '—') + ' · ' + stageDef(p.stage).label;
+      return h('option', { value: p.id }, [label]);
+    }),
+  ]);
+  leadSection.appendChild(h('div', { class: 'muted-text', style: 'margin-bottom:10px;' },
+    [openLeads.length === 0 ? 'No active leads. Create a new lead first or pick another tab.' : 'Pick the lead you want to convert into an active project.']));
+  leadSection.appendChild(h('div', { class: 'field' }, [h('label', {}, ['Lead']), leadSel]));
+
+  // ----- Existing-customer section -----
+  const exSection = h('div', { style: 'display:none;' });
+  const exSel = h('select', {}, [
+    h('option', { value: '' }, ['Select customer…']),
+    ...state.store.customers.slice().sort((a,b) => a.name.localeCompare(b.name)).map(c => h('option', { value: c.id }, [c.name + (c.phone ? ' · ' + c.phone : '')])),
+  ]);
+  exSection.appendChild(h('div', { class: 'field' }, [h('label', {}, ['Customer']), exSel]));
+
+  // ----- New-customer section -----
+  const newSection = h('div', { style: 'display:none;' });
+  const cName  = h('input', { type: 'text',  placeholder: 'Full name' });
+  const cPhone = h('input', { type: 'tel',   placeholder: '(212) 555-0123' });
+  const cEmail = h('input', { type: 'email', placeholder: 'name@example.com' });
+  newSection.appendChild(h('div', { class: 'field' }, [h('label', {}, ['Customer name']), cName]));
+  newSection.appendChild(h('div', { class: 'field-row' }, [
+    h('div', { class: 'field' }, [h('label', {}, ['Phone']), cPhone]),
+    h('div', { class: 'field' }, [h('label', {}, ['Email']), cEmail]),
+  ]));
+
+  // ----- Project fields (visible only in customer modes) -----
+  const pAddr = h('input', { type: 'text', placeholder: 'Project site address' });
+  const pAssignee = h('select', {}, state.store.users.filter(u => u.active).map(u => h('option', { value: u.id }, [u.name + ' · ' + ROLES[u.role].label])));
+  pAssignee.value = state.session.userId;
+
+  const projSection = h('div', { style: 'display:none; border-top:1px solid var(--line-soft); padding-top:14px; margin-top:6px;' }, [
+    h('div', { class: 'section-title' }, ['Project']),
+    h('div', { class: 'field' }, [h('label', {}, ['Project site address']), pAddr]),
+    h('div', { class: 'field' }, [h('label', {}, ['Assigned to']), pAssignee]),
+  ]);
+
+  const body = h('div', {}, [tabs, leadSection, exSection, newSection, projSection]);
+
+  function setMode(m) {
+    mode.value = m;
+    tabLead.classList.toggle('active', m === 'fromLead');
+    tabEx.classList.toggle('active',   m === 'existingCustomer');
+    tabNew.classList.toggle('active',  m === 'newCustomer');
+    leadSection.style.display = m === 'fromLead' ? '' : 'none';
+    exSection.style.display   = m === 'existingCustomer' ? '' : 'none';
+    newSection.style.display  = m === 'newCustomer' ? '' : 'none';
+    projSection.style.display = m === 'fromLead' ? 'none' : '';
+  }
+
+  // Auto-disable tabs that don't apply
+  if (openLeads.length === 0) setMode(state.store.customers.length > 0 ? 'existingCustomer' : 'newCustomer');
+  if (state.store.customers.length === 0) tabEx.style.display = 'none';
+
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    h('button', { class: 'btn btn-primary', onclick: async () => {
+      try {
+        if (mode.value === 'fromLead') {
+          if (!leadSel.value) { toast('Pick a lead'); return; }
+          const lead = state.store.projects.find(x => x.id === leadSel.value);
+          if (!lead) { toast('Lead not found'); return; }
+          // Convert lead → active project
+          setStage(lead, 'dealClosed', { note: 'converted from lead' });
+          if (!lead.quote.approvedAt) lead.quote.approvedAt = new Date().toISOString();
+          saveStore();
+          closeModal();
+          openProjectTaskWizard(lead, () => navigate('projects/' + lead.id));
+          return;
+        }
+        if (!pAddr.value.trim()) { toast('Project address required'); return; }
+        let customerId;
+        if (mode.value === 'existingCustomer') {
+          if (!exSel.value) { toast('Select a customer'); return; }
+          customerId = exSel.value;
+        } else {
+          if (!cName.value.trim()) { toast('Customer name required'); return; }
+          const cust = await addCustomer({
+            name: cName.value.trim(),
+            phone: cPhone.value.trim(),
+            email: cEmail.value.trim(),
+            generalAddress: pAddr.value.trim(),
+            notes: '',
+          });
+          customerId = cust.id;
+        }
+        const p = await createProject({
+          customerId,
+          address: pAddr.value.trim(),
+          assignedTo: pAssignee.value,
+          stage: 'dealClosed', // skip lead phase — this is an active project from the start
+        });
+        closeModal();
+        openProjectTaskWizard(p, () => navigate('projects/' + p.id));
+      } catch (e) { toast('Failed: ' + e.message); }
+    } }, ['Create project']),
+  ]);
+
+  modal({ title: 'New project', body, footer });
+}
+
+// ----- Project task wizard (run after a project is created) -----
+
+function openProjectTaskWizard(project, onDone) {
+  const c = customerOf(project);
+  const suffix = c ? ' — ' + c.name : '';
+
+  // Suggested follow-up tasks for kitchen projects.
+  const TEMPLATES = [
+    { title: 'Take measurements at site' + suffix,    days: 3,  checked: true,  priority: 'high'   },
+    { title: 'Submit drawings for approval' + suffix, days: 7,  checked: true,  priority: 'normal' },
+    { title: 'Submit production order' + suffix,      days: 14, checked: false, priority: 'normal' },
+    { title: 'Schedule delivery' + suffix,            days: 30, checked: false, priority: 'normal' },
+    { title: 'Schedule installation' + suffix,        days: 35, checked: false, priority: 'normal' },
+  ];
+
+  const rows = [];
+  const rowsWrap = h('div', { class: 'wizard-rows' });
+
+  function addRow(t) {
+    const cb = h('input', { type: 'checkbox' });
+    cb.checked = !!t.checked;
+    const titleEl = h('input', { type: 'text', value: t.title });
+    const daysEl = h('input', { type: 'number', value: String(t.days), min: '0', max: '365', style: 'width:70px;' });
+    const prioEl = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
+    prioEl.value = t.priority || 'normal';
+    const removeBtn = h('button', { class: 'btn-mini', title: 'Remove', onclick: () => {
+      const i = rows.indexOf(rowItem); if (i >= 0) { rows.splice(i, 1); row.remove(); }
+    } }, [icon('trash')]);
+    const row = h('div', { class: 'wizard-row' }, [
+      cb,
+      titleEl,
+      h('span', { class: 'muted-text' }, ['+']),
+      daysEl,
+      h('span', { class: 'muted-text' }, ['days']),
+      prioEl,
+      removeBtn,
+    ]);
+    const rowItem = { cb, titleEl, daysEl, prioEl };
+    rows.push(rowItem);
+    rowsWrap.appendChild(row);
+  }
+
+  TEMPLATES.forEach(addRow);
+
+  const addBtn = h('button', { class: 'btn btn-sm btn-ghost', onclick: () => addRow({ title: '', days: 7, checked: true, priority: 'normal' }) }, [icon('plus'), 'Add another task']);
+
+  const body = h('div', {}, [
+    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, [
+      'Project created. Pick which follow-up tasks to add. Uncheck any you don\'t want, edit titles and dates, or add your own.',
+    ]),
+    h('div', { class: 'wizard-head' }, [
+      h('span', {}, ['']),
+      h('span', {}, ['Task']),
+      h('span', {}, ['']),
+      h('span', {}, ['Due']),
+      h('span', {}, ['']),
+      h('span', {}, ['Priority']),
+      h('span', {}, ['']),
+    ]),
+    rowsWrap,
+    h('div', { style: 'margin-top:10px;' }, [addBtn]),
+  ]);
+
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: () => { closeModal(); onDone?.(); } }, ['Skip — no tasks']),
+    h('button', { class: 'btn btn-primary', onclick: async () => {
+      const picked = rows
+        .map(r => ({
+          checked: r.cb.checked,
+          title: r.titleEl.value.trim(),
+          days: parseInt(r.daysEl.value, 10) || 0,
+          priority: r.prioEl.value || 'normal',
+        }))
+        .filter(it => it.checked && it.title);
+      try {
+        for (const it of picked) {
+          await addTask({
+            title: it.title,
+            projectId: project.id,
+            assignedTo: project.assignedTo || state.session.userId,
+            dueDate: addDays(new Date(), it.days).toISOString().slice(0, 10),
+            priority: it.priority,
+            completed: false,
+          });
+          logActivity(project.id, 'Task created (template): ' + it.title);
+        }
+        if (picked.length) toast(picked.length + ' task' + (picked.length > 1 ? 's' : '') + ' added');
+        closeModal();
+        onDone?.();
+      } catch (e) { toast('Failed: ' + e.message); }
+    } }, ['Create selected tasks']),
+  ]);
+
+  modal({ title: 'Add follow-up tasks?', body, footer, size: 'lg' });
 }
 
 // ----- Project detail -----

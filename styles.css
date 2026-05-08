@@ -912,6 +912,53 @@ ul.plain li:last-child { border-bottom: none; }
 .thread-msg-attach .ico { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-faint); }
 .thread-msg-attach a { color: var(--gold); word-break: break-all; }
 
+/* Project task wizard — pick which follow-up tasks to create */
+.wizard-head {
+  display: grid;
+  grid-template-columns: 24px 1fr 14px 80px 40px 110px 28px;
+  gap: 8px;
+  padding: 0 4px 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.wizard-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+.wizard-row {
+  display: grid;
+  grid-template-columns: 24px 1fr 14px 80px 40px 110px 28px;
+  gap: 8px;
+  align-items: center;
+  padding: 4px;
+  border-radius: var(--r-sm);
+}
+.wizard-row:hover { background: var(--bg-row); }
+.wizard-row input[type="text"] { padding: 6px 9px; }
+.wizard-row input[type="number"] { padding: 6px 9px; text-align: right; }
+.wizard-row input[type="checkbox"] { width: auto; cursor: pointer; }
+.wizard-row select { padding: 6px 8px; font-size: 12px; }
+@media (max-width: 640px) {
+  .wizard-head { display: none; }
+  .wizard-row {
+    grid-template-columns: 24px 1fr 28px;
+    grid-template-areas: "cb title remove" "_ days days" "_ prio prio";
+    row-gap: 4px;
+  }
+  .wizard-row > input[type="checkbox"] { grid-area: cb; }
+  .wizard-row > input[type="text"]     { grid-area: title; }
+  .wizard-row > .btn-mini              { grid-area: remove; }
+  .wizard-row > input[type="number"],
+  .wizard-row > select { grid-column: 2 / 4; }
+  .wizard-row > .muted-text { display: none; }
+}
+
 /* Stack & spacing utilities (purposeful, used) */
 .stack-12 > * + * { margin-top: 12px; }
 .stack-18 > * + * { margin-top: 18px; }

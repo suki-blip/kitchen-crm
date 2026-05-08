@@ -137,7 +137,19 @@ label {
   display: grid;
   grid-template-columns: 232px 1fr;
   height: 100vh;
+  position: relative;
 }
+
+/* Sidebar drawer overlay (mobile/tablet) */
+.sidebar-backdrop {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(29, 27, 23, 0.4);
+  z-index: 50;
+  backdrop-filter: blur(2px);
+}
+.layout.sidebar-open .sidebar-backdrop { display: block; }
 
 /* Sidebar */
 .sidebar {
@@ -280,7 +292,23 @@ label {
   font-size: 13px;
   margin-top: 4px;
 }
-.topbar-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.topbar-actions { display: flex; gap: 8px; flex-shrink: 0; align-items: center; }
+
+.hamburger {
+  display: none;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--r-sm);
+  background: transparent;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+.hamburger:hover { background: var(--bg-elev); }
+.hamburger .ico { width: 18px; height: 18px; }
 
 .content { padding: 8px 32px 80px; flex: 1; }
 
@@ -492,7 +520,7 @@ table.flat tbody tr.muted td { color: var(--text-faint); }
     var(--bg);
 }
 .login-card {
-  width: 380px;
+  width: min(380px, calc(100vw - 32px));
   background: var(--bg-elev);
   border: 1px solid var(--line);
   border-radius: var(--r-lg);
@@ -800,3 +828,88 @@ ul.plain li:last-child { border-bottom: none; }
 
 /* Small inline icon helper */
 .ico-inline { vertical-align: middle; display: inline-block; }
+
+/* ============================================================ */
+/* Responsive — tablet (≤900px) and mobile (≤640px)              */
+/* ============================================================ */
+
+@media (max-width: 900px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 260px;
+    z-index: 60;
+    transform: translateX(-100%);
+    transition: transform .25s ease;
+    box-shadow: var(--shadow-3);
+  }
+  .layout.sidebar-open .sidebar {
+    transform: translateX(0);
+  }
+  .hamburger {
+    display: inline-flex;
+  }
+  .topbar { padding: 18px 18px 14px; }
+  .topbar h1 { font-size: 18px; }
+  .topbar .titles { flex: 1; min-width: 0; }
+  .content { padding: 8px 18px 80px; }
+  .detail-head { padding: 18px 18px 14px; flex-wrap: wrap; }
+  .tabs { padding: 0 18px; overflow-x: auto; flex-wrap: nowrap; }
+  .tab { white-space: nowrap; flex-shrink: 0; }
+  .pipeline { padding: 12px 18px 0 !important; }
+}
+
+@media (max-width: 640px) {
+  .stats { grid-template-columns: 1fr 1fr; gap: 10px; }
+  .stat-card { padding: 12px 14px; }
+  .stat-card .val { font-size: 22px; }
+
+  .topbar { gap: 12px; }
+  .topbar-actions .btn { padding: 7px 10px; }
+  .topbar-actions .btn .ico { display: none; }
+
+  /* Tables scroll horizontally inside their card */
+  .card > div:has(table.flat) { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table.flat { min-width: 560px; }
+
+  /* Toolbar wraps cleanly */
+  .toolbar { gap: 6px; }
+  .toolbar input[type="text"] { min-width: 0; flex: 1; width: 100%; }
+  .toolbar select { flex: 1; }
+
+  /* Project detail head */
+  .detail-head h1 { font-size: 18px; }
+  .detail-head > div:last-child { width: 100%; text-align: left !important; }
+  .detail-head > div:last-child > div:last-child { justify-content: flex-start !important; }
+
+  /* Modals — full-width panels */
+  .modal {
+    max-width: calc(100vw - 16px);
+    border-radius: var(--r-md);
+  }
+  .modal-body { padding: 16px; }
+  .modal-header { padding: 14px 16px; }
+  .modal-footer { padding: 12px 16px; }
+  .field-row { grid-template-columns: 1fr; gap: 10px; }
+
+  /* Files grid — single column */
+  .file-grid { grid-template-columns: 1fr; }
+
+  /* Task rows wrap meta below title */
+  .task-row { flex-wrap: wrap; padding: 10px 14px; }
+  .task-row .ttitle { flex-basis: 100%; min-width: 0; }
+  .task-row .tmeta { font-size: 10px; gap: 8px; flex-wrap: wrap; }
+
+  /* Customer/Public tracking */
+  .public-card { padding: 24px 18px; border-radius: var(--r-md); }
+  .public-wrap { padding: 24px 12px; }
+}
+
+@media (max-width: 480px) {
+  .stats { grid-template-columns: 1fr; }
+}

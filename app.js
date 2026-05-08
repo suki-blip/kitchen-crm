@@ -314,6 +314,7 @@ const state = {
   store: null,
   session: null,
   route: { name: 'dashboard', params: {} },
+  ui: { sidebarOpen: false },
 };
 
 function currentUser() {
@@ -415,6 +416,7 @@ const ICONS = {
   dollar:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M16 7H10a3 3 0 0 0 0 6h4a3 3 0 0 1 0 6H8"/></svg>',
   calendar:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
   spark:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.7 4.6L18 9l-4.3 1.4L12 15l-1.7-4.6L6 9l4.3-1.4L12 3Z"/><path d="M19 16l.7 1.8L21 18l-1.3.4L19 20l-.7-1.6L17 18l1.3-.2L19 16Z"/></svg>',
+  menu:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
 };
 
 function icon(name, cls = 'ico') {
@@ -541,7 +543,11 @@ function renderLogin() {
 // ----- Shell -----
 
 function renderShell() {
-  const layout = h('div', { class: 'layout' });
+  const layout = h('div', { class: 'layout' + (state.ui.sidebarOpen ? ' sidebar-open' : '') });
+  layout.appendChild(h('div', {
+    class: 'sidebar-backdrop',
+    onclick: () => { state.ui.sidebarOpen = false; render(); },
+  }));
   layout.appendChild(renderSidebar());
   const main = h('div', { class: 'main' });
 
@@ -588,7 +594,10 @@ function renderSidebar() {
     const active = state.route.name === item.route ||
       (item.route === 'projects' && state.route.name === 'project') ||
       (item.route === 'customers' && state.route.name === 'customer');
-    const navEl = h('div', { class: 'nav-item' + (active ? ' active' : ''), onclick: () => navigate(item.route) }, [
+    const navEl = h('div', { class: 'nav-item' + (active ? ' active' : ''), onclick: () => {
+      state.ui.sidebarOpen = false;
+      navigate(item.route);
+    } }, [
       icon(item.ico),
       h('span', { class: 'lbl' }, [item.label]),
       item.count != null && item.count > 0 ? h('span', { class: 'nav-count' }, [String(item.count)]) : null,
@@ -610,6 +619,13 @@ function renderSidebar() {
 }
 
 function topbar(crumbs, actions, opts = {}) {
+  const hamburger = h('button', {
+    class: 'hamburger',
+    title: 'Menu',
+    'aria-label': 'Open menu',
+    onclick: () => { state.ui.sidebarOpen = true; render(); },
+  }, [icon('menu')]);
+
   const titles = h('div', { class: 'titles' });
   const list = Array.isArray(crumbs) ? crumbs : [crumbs];
   const main = list[0] || '';
@@ -624,8 +640,10 @@ function topbar(crumbs, actions, opts = {}) {
   }
   titles.appendChild(h('h1', {}, [main]));
   if (opts.subtitle) titles.appendChild(h('div', { class: 'sub' }, [opts.subtitle]));
+
+  const head = h('div', { style: 'display:flex; align-items:flex-end; gap:10px; min-width:0; flex:1;' }, [hamburger, titles]);
   return h('div', { class: 'topbar' }, [
-    titles,
+    head,
     h('div', { class: 'topbar-actions' }, actions || []),
   ]);
 }

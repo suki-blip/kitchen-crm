@@ -133,22 +133,26 @@ function trackedArray(table, arr) {
 }
 
 async function loadAll() {
-  const [profiles, customers, projects, tasks] = await Promise.all([
+  const [profiles, customers, projects, tasks, threads] = await Promise.all([
     db.profiles.list(),
     db.customers.list(),
     db.projects.list(),
     db.tasks.list(),
+    db.threads.listMine(),
   ]);
   _dirty.customers.clear(); _dirty.projects.clear(); _dirty.tasks.clear();
   state.store = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     users: profiles,
     customers: trackedArray('customers', customers.map(c => trackedEntity('customers', c))),
     projects: trackedArray('projects', projects.map(p => trackedEntity('projects', p))),
     tasks: trackedArray('tasks', tasks.map(t => trackedEntity('tasks', t))),
+    threads,
     activity: [],          // loaded per-project on demand
     filesByProject: {},    // loaded per-project on demand
     activityByProject: {}, // loaded per-project on demand
+    notesByTask: {},       // loaded per-task on demand
+    messagesByThread: {},  // loaded per-thread on demand
     settings: { businessName: 'MAKO CABINETS', currency: 'USD' },
   };
 }
@@ -335,6 +339,7 @@ function parseHash() {
     case 'customers': return parts[1] ? { name: 'customer', params: { id: parts[1] } } : { name: 'customers', params: {} };
     case 'tasks':     return { name: 'tasks', params: {} };
     case 'users':     return { name: 'users', params: {} };
+    case 'messages':  return parts[1] ? { name: 'thread', params: { id: parts[1] } } : { name: 'messages', params: {} };
     case 'track':     return { name: 'track', params: { token: parts[1] } };
     default:          return { name: 'dashboard', params: {} };
   }
@@ -417,6 +422,11 @@ const ICONS = {
   calendar:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>',
   spark:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.7 4.6L18 9l-4.3 1.4L12 15l-1.7-4.6L6 9l4.3-1.4L12 3Z"/><path d="M19 16l.7 1.8L21 18l-1.3.4L19 20l-.7-1.6L17 18l1.3-.2L19 16Z"/></svg>',
   menu:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>',
+  message:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6c0-1.1.9-2 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H10l-4 4v-4H6a2 2 0 0 1-2-2V6Z"/></svg>',
+  paperclip:  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="m21 11-9.5 9.5a4 4 0 0 1-5.66-5.66L15 6.18a2.7 2.7 0 0 1 3.82 3.82L9.5 19"/></svg>',
+  check:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m5 12 5 5 9-11"/></svg>',
+  trash:      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M10 11v6M14 11v6"/></svg>',
+  send:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4 20-7Z"/></svg>',
 };
 
 function icon(name, cls = 'ico') {
@@ -560,6 +570,8 @@ function renderShell() {
     case 'customer':  main.appendChild(renderCustomerDetail(state.route.params.id)); break;
     case 'tasks':     main.appendChild(renderTasksPage()); break;
     case 'users':     main.appendChild(renderUsersPage()); break;
+    case 'messages':  main.appendChild(renderMessagesPage()); break;
+    case 'thread':    main.appendChild(renderThreadDetail(state.route.params.id)); break;
     default:          main.appendChild(renderDashboard());
   }
 
@@ -580,6 +592,7 @@ function renderSidebar() {
   const leadCount    = state.store.projects.filter(p => stagePhase(p.stage) === 'lead').length;
   const projectCount = state.store.projects.filter(p => stagePhase(p.stage) === 'active').length;
   const myTasks      = state.store.tasks.filter(t => !t.completed && t.assignedTo === u.id).length;
+  const myInbox = (state.store.threads || []).filter(t => t.recipient_id === u.id && t.status === 'open').length;
 
   const navItems = [
     { route: 'dashboard', label: 'Dashboard', ico: 'dashboard' },
@@ -587,6 +600,7 @@ function renderSidebar() {
     { route: 'projects',  label: 'Projects',  ico: 'projects',  count: projectCount },
     { route: 'customers', label: 'Customers', ico: 'customers', count: state.store.customers.length },
     { route: 'tasks',     label: 'Tasks',     ico: 'tasks',     count: myTasks },
+    { route: 'messages',  label: 'Messages',  ico: 'message',   count: myInbox },
   ];
   if (u.role === 'admin') navItems.push({ route: 'users', label: 'Users & Roles', ico: 'users' });
 
@@ -2138,6 +2152,64 @@ function openEditTask(t, onSaved) {
     h('button', { class: 'btn btn-sm', onclick: () => setDays(7) }, ['+1 week']),
   ]);
 
+  // ----- Notes section -----
+  const notesWrap = h('div', { class: 'task-notes-wrap' });
+
+  function renderNotes(notes) {
+    clear(notesWrap);
+    if (notes.length === 0) {
+      notesWrap.appendChild(h('div', { class: 'muted-text', style: 'padding:8px 0;' }, ['No notes yet — add one below to log progress.']));
+    } else {
+      notes.forEach(n => {
+        const author = state.store.users.find(u => u.id === n.author_id);
+        const isMine = n.author_id === state.session?.userId;
+        notesWrap.appendChild(h('div', { class: 'task-note' }, [
+          h('div', { class: 'task-note-meta' }, [
+            (author ? author.name : 'Someone') + ' · ' + fmtDateTime(n.created_at),
+            isMine ? h('button', {
+              class: 'btn-mini',
+              title: 'Delete note',
+              onclick: async () => {
+                if (!confirm('Delete this note?')) return;
+                try {
+                  await db.taskNotes.remove(n.id);
+                  state.store.notesByTask[t.id] = (state.store.notesByTask[t.id] || []).filter(x => x.id !== n.id);
+                  renderNotes(state.store.notesByTask[t.id]);
+                } catch (e) { toast('Failed: ' + e.message); }
+              },
+            }, [icon('trash')]) : null,
+          ]),
+          h('div', { class: 'task-note-body' }, [n.body]),
+        ]));
+      });
+    }
+  }
+
+  // Load notes
+  if (state.store.notesByTask[t.id]) {
+    renderNotes(state.store.notesByTask[t.id]);
+  } else {
+    notesWrap.appendChild(h('div', { class: 'muted-text', style: 'padding:8px 0;' }, ['Loading notes…']));
+    db.taskNotes.listForTask(t.id).then(rows => {
+      state.store.notesByTask[t.id] = rows;
+      renderNotes(rows);
+    }).catch(e => { console.error('notes load', e); });
+  }
+
+  const newNoteEl = h('textarea', { rows: 2, placeholder: 'Add a note (e.g. "Sent email to supplier, waiting for confirmation")' });
+  const addNoteBtn = h('button', { class: 'btn btn-sm', onclick: async () => {
+    const body = newNoteEl.value.trim();
+    if (!body) return;
+    addNoteBtn.disabled = true;
+    try {
+      const note = await db.taskNotes.create(t.id, body);
+      state.store.notesByTask[t.id] = [note, ...(state.store.notesByTask[t.id] || [])];
+      newNoteEl.value = '';
+      renderNotes(state.store.notesByTask[t.id]);
+    } catch (e) { toast('Failed: ' + e.message); }
+    addNoteBtn.disabled = false;
+  } }, ['Add note']);
+
   const body = h('div', {}, [
     h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, [t.title]),
     h('div', { class: 'field-row' }, [
@@ -2145,6 +2217,13 @@ function openEditTask(t, onSaved) {
       h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
     ]),
     h('div', { class: 'field' }, [h('label', {}, ['Postpone']), presets]),
+    h('hr'),
+    h('label', {}, ['Notes & updates']),
+    notesWrap,
+    h('div', { style: 'margin-top:8px;' }, [
+      newNoteEl,
+      h('div', { style: 'display:flex; justify-content:flex-end; margin-top:6px;' }, [addNoteBtn]),
+    ]),
   ]);
   const footer = h('div', {}, [
     h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
@@ -2264,6 +2343,314 @@ function openUserModal(existing) {
     } }, ['Save']),
   ]);
   modal({ title: 'Edit user', body, footer });
+}
+
+// ----- Internal messages (team Q&A) -----
+
+const URGENCY = {
+  urgent: { label: 'Urgent', tag: 'danger', sort: 0 },
+  high:   { label: 'High',   tag: 'warn',   sort: 1 },
+  normal: { label: 'Normal', tag: '',       sort: 2 },
+  low:    { label: 'Low',    tag: 'dim',    sort: 3 },
+};
+
+function renderMessagesPage() {
+  const u = currentUser();
+  const wrap = h('div');
+  wrap.appendChild(topbar('Messages', [
+    h('button', { class: 'btn btn-primary', onclick: () => openComposeThread() }, [icon('plus'), 'New message']),
+  ]));
+
+  const filterSel = h('select', {}, [
+    h('option', { value: 'inbox' }, ['Inbox · sent to me']),
+    h('option', { value: 'sent'  }, ['Sent · started by me']),
+    h('option', { value: 'all'   }, ['All my threads']),
+    h('option', { value: 'open'  }, ['Open only']),
+    h('option', { value: 'closed'}, ['Closed only']),
+  ]);
+  const urgencySel = h('select', {}, [
+    h('option', { value: '' }, ['All urgencies']),
+    ...Object.entries(URGENCY).map(([id, ur]) => h('option', { value: id }, [ur.label])),
+  ]);
+
+  const content = h('div', { class: 'content' });
+  const listWrap = h('div');
+
+  const refresh = () => {
+    clear(listWrap);
+    let list = (state.store.threads || []).slice();
+    const f = filterSel.value;
+    if (f === 'inbox') list = list.filter(t => t.recipient_id === u.id);
+    else if (f === 'sent') list = list.filter(t => t.starter_id === u.id);
+    else if (f === 'open') list = list.filter(t => t.status === 'open');
+    else if (f === 'closed') list = list.filter(t => t.status === 'closed');
+    if (urgencySel.value) list = list.filter(t => t.urgency === urgencySel.value);
+
+    if (list.length === 0) {
+      listWrap.appendChild(emptyState({
+        icon: 'message',
+        title: 'Nothing here yet',
+        text: f === 'inbox' ? 'No incoming messages — quiet day.' : 'Start a thread to ask a teammate something.',
+      }));
+      return;
+    }
+
+    list.sort((a, b) => {
+      // Open first, then by urgency, then by latest
+      if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
+      const ua = URGENCY[a.urgency]?.sort ?? 9;
+      const ub = URGENCY[b.urgency]?.sort ?? 9;
+      if (ua !== ub) return ua - ub;
+      return (b.last_message_at || '').localeCompare(a.last_message_at || '');
+    });
+
+    list.forEach(t => listWrap.appendChild(renderThreadRow(t)));
+  };
+  filterSel.addEventListener('change', refresh);
+  urgencySel.addEventListener('change', refresh);
+
+  content.appendChild(h('div', { class: 'toolbar' }, [filterSel, urgencySel]));
+  content.appendChild(h('div', { class: 'card' }, [listWrap]));
+  refresh();
+  wrap.appendChild(content);
+  return wrap;
+}
+
+function renderThreadRow(t) {
+  const u = currentUser();
+  const ur = URGENCY[t.urgency] || URGENCY.normal;
+  const starter = state.store.users.find(x => x.id === t.starter_id);
+  const recipient = state.store.users.find(x => x.id === t.recipient_id);
+  const proj = state.store.projects.find(p => p.id === t.project_id);
+  const cust = state.store.customers.find(c => c.id === t.customer_id) || (proj && customerOf(proj));
+  const otherParty = t.starter_id === u.id ? recipient : starter;
+  const direction = t.starter_id === u.id ? 'To: ' : 'From: ';
+
+  const row = h('div', { class: 'task-row' + (t.status === 'closed' ? ' done' : '') + (ur.id !== 'normal' ? ' pri-' + t.urgency : ''), onclick: () => navigate('messages/' + t.id) });
+
+  row.appendChild(h('div', { class: 'ttitle' }, [
+    ur.id !== 'normal' ? h('span', { class: 'tag ' + ur.tag + ' tag-pri' }, [ur.label]) : null,
+    h('span', { style: 'font-weight:600;' }, [t.subject || '(no subject)']),
+    cust ? h('span', { class: 'faint-text' }, [' · ' + cust.name]) : null,
+    proj?.address ? h('span', { class: 'faint-text' }, [' · ' + proj.address]) : null,
+  ]));
+  row.appendChild(h('div', { class: 'tmeta' }, [
+    h('span', {}, [direction + (otherParty ? otherParty.name : 'Unknown')]),
+    h('span', { class: 'tmeta-due' }, [icon('calendar'), ' ', fmtShortDate(t.last_message_at)]),
+    t.status === 'closed' ? h('span', { class: 'tag dim' }, ['Closed']) : null,
+  ]));
+  return row;
+}
+
+function openComposeThread(opts = {}) {
+  const u = currentUser();
+  const recipientSel = h('select', {}, state.store.users.filter(x => x.active && x.id !== u.id).map(x => h('option', { value: x.id }, [x.name + ' · ' + ROLES[x.role].label])));
+  if (opts.recipientId) recipientSel.value = opts.recipientId;
+
+  const projectSel = h('select', {}, [
+    h('option', { value: '' }, ['(no project)']),
+    ...state.store.projects.map(p => {
+      const c = customerOf(p);
+      return h('option', { value: p.id }, [(c?.name || 'Customer') + ' · ' + (p.address || '')]);
+    }),
+  ]);
+  if (opts.projectId) projectSel.value = opts.projectId;
+
+  const urgencySel = h('select', {}, Object.entries(URGENCY).map(([id, ur]) => h('option', { value: id }, [ur.label])));
+  urgencySel.value = 'normal';
+
+  const subject = h('input', { type: 'text', placeholder: 'Short subject (e.g. "Sink delivery date")' });
+  const body = h('textarea', { rows: 4, placeholder: 'What do you need?' });
+
+  const attachKind = h('select', {}, [
+    h('option', { value: '' }, ['No attachment']),
+    h('option', { value: 'image' }, ['Image link']),
+    h('option', { value: 'file'  }, ['File link']),
+    h('option', { value: 'link'  }, ['Web link']),
+  ]);
+  const attachUrl   = h('input', { type: 'url',  placeholder: 'https://...' });
+  const attachLabel = h('input', { type: 'text', placeholder: 'Label (optional)' });
+
+  const bodyEl = h('div', {}, [
+    h('div', { class: 'field' }, [h('label', {}, ['To']), recipientSel]),
+    h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Project (optional)']), projectSel]),
+      h('div', { class: 'field' }, [h('label', {}, ['Urgency']), urgencySel]),
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, ['Subject']), subject]),
+    h('div', { class: 'field' }, [h('label', {}, ['Question / message']), body]),
+    h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Attach']), attachKind]),
+      h('div', { class: 'field' }, [h('label', {}, ['URL']), attachUrl]),
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, ['Attachment label (optional)']), attachLabel]),
+  ]);
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    h('button', { class: 'btn btn-primary', onclick: async () => {
+      if (!recipientSel.value) { toast('Pick a recipient'); return; }
+      if (!body.value.trim()) { toast('Write a message body'); return; }
+      try {
+        const proj = state.store.projects.find(p => p.id === projectSel.value);
+        const thread = await db.threads.create({
+          recipientId: recipientSel.value,
+          projectId: projectSel.value || null,
+          customerId: proj?.customerId || null,
+          subject: subject.value.trim() || null,
+          urgency: urgencySel.value,
+          body: body.value.trim(),
+          attachmentUrl: attachUrl.value.trim() || null,
+          attachmentKind: attachKind.value || null,
+          attachmentLabel: attachLabel.value.trim() || null,
+        });
+        state.store.threads = [thread, ...(state.store.threads || [])];
+        closeModal();
+        navigate('messages/' + thread.id);
+      } catch (e) { toast('Failed: ' + e.message); }
+    } }, [icon('send'), 'Send']),
+  ]);
+  modal({ title: 'New message', body: bodyEl, footer });
+}
+
+function renderThreadDetail(id) {
+  const wrap = h('div');
+  const thread = (state.store.threads || []).find(t => t.id === id);
+
+  if (!thread) {
+    wrap.appendChild(topbar(['Messages', 'Not found'], [
+      h('button', { class: 'btn btn-sm btn-ghost', onclick: () => navigate('messages') }, ['← Back']),
+    ]));
+    wrap.appendChild(h('div', { class: 'content' }, [h('div', { class: 'empty' }, ['Thread not found.'])]));
+    return wrap;
+  }
+
+  const u = currentUser();
+  const isStarter = thread.starter_id === u.id;
+  const ur = URGENCY[thread.urgency] || URGENCY.normal;
+  const starter = state.store.users.find(x => x.id === thread.starter_id);
+  const recipient = state.store.users.find(x => x.id === thread.recipient_id);
+  const proj = state.store.projects.find(p => p.id === thread.project_id);
+  const cust = state.store.customers.find(c => c.id === thread.customer_id) || (proj && customerOf(proj));
+
+  const actions = [
+    h('button', { class: 'btn btn-sm btn-ghost', onclick: () => navigate('messages') }, ['← Inbox']),
+    thread.status === 'open'
+      ? h('button', { class: 'btn btn-sm', onclick: async () => {
+          if (!confirm('Mark this conversation as done? It will move to Closed.')) return;
+          try { await db.threads.close(thread.id); thread.status = 'closed'; thread.closed_at = new Date().toISOString(); render(); } catch (e) { toast('Failed: ' + e.message); }
+        } }, [icon('check'), 'Mark done'])
+      : h('button', { class: 'btn btn-sm', onclick: async () => {
+          try { await db.threads.reopen(thread.id); thread.status = 'open'; thread.closed_at = null; render(); } catch (e) { toast('Failed: ' + e.message); }
+        } }, ['Reopen']),
+    h('button', { class: 'btn btn-sm btn-danger', onclick: async () => {
+      if (!confirm('Delete this entire conversation? This cannot be undone.')) return;
+      try {
+        await db.threads.remove(thread.id);
+        state.store.threads = (state.store.threads || []).filter(x => x.id !== thread.id);
+        navigate('messages');
+      } catch (e) { toast('Failed: ' + e.message); }
+    } }, [icon('trash')]),
+  ];
+
+  wrap.appendChild(topbar(thread.subject || '(no subject)', actions, {
+    subtitle: (isStarter ? 'To ' + (recipient?.name || 'Unknown') : 'From ' + (starter?.name || 'Unknown'))
+      + (cust ? ' · ' + cust.name : '')
+      + (proj?.address ? ' · ' + proj.address : '')
+      + (ur.id !== 'normal' ? ' · ' + ur.label + ' urgency' : '')
+      + (thread.status === 'closed' ? ' · Closed' : ''),
+  }));
+
+  const content = h('div', { class: 'content' });
+  const messagesCard = h('div', { class: 'card' });
+  const messagesList = h('div', { class: 'thread-messages' });
+  messagesCard.appendChild(messagesList);
+  content.appendChild(messagesCard);
+
+  function renderMessages(msgs) {
+    clear(messagesList);
+    if (msgs.length === 0) {
+      messagesList.appendChild(h('div', { class: 'empty' }, ['Loading…']));
+      return;
+    }
+    msgs.forEach(m => {
+      const author = state.store.users.find(x => x.id === m.author_id);
+      const mine = m.author_id === u.id;
+      const bubble = h('div', { class: 'thread-msg' + (mine ? ' mine' : '') }, [
+        h('div', { class: 'thread-msg-head' }, [
+          h('span', { class: 'thread-msg-author' }, [author ? author.name : 'Unknown']),
+          h('span', { class: 'thread-msg-time' }, [fmtDateTime(m.created_at)]),
+        ]),
+        h('div', { class: 'thread-msg-body' }, [m.body]),
+        m.attachment_url ? h('div', { class: 'thread-msg-attach' }, [
+          icon('paperclip'),
+          ' ',
+          h('a', { href: m.attachment_url, target: '_blank', rel: 'noopener' }, [m.attachment_label || m.attachment_url]),
+          h('span', { class: 'faint-text' }, [' (' + (m.attachment_kind || 'link') + ')']),
+        ]) : null,
+      ]);
+      messagesList.appendChild(bubble);
+    });
+  }
+
+  // Lazy-load messages
+  if (state.store.messagesByThread[id]) {
+    renderMessages(state.store.messagesByThread[id]);
+  } else {
+    messagesList.appendChild(h('div', { class: 'empty' }, ['Loading…']));
+    db.threadMessages.listForThread(id).then(rows => {
+      state.store.messagesByThread[id] = rows;
+      renderMessages(rows);
+      // Mark messages from the other party as read
+      db.threadMessages.markRead(id).catch(() => {});
+    }).catch(e => console.error('messages load', e));
+  }
+
+  // Reply composer (always visible — replying reopens a closed thread automatically via trigger)
+  const replyBody  = h('textarea', { rows: 3, placeholder: thread.status === 'closed' ? 'Send a follow-up question (will reopen the thread)' : 'Write a reply…' });
+  const replyKind  = h('select', {}, [
+    h('option', { value: '' }, ['No attachment']),
+    h('option', { value: 'image' }, ['Image link']),
+    h('option', { value: 'file'  }, ['File link']),
+    h('option', { value: 'link'  }, ['Web link']),
+  ]);
+  const replyUrl   = h('input', { type: 'url', placeholder: 'https://... (optional)' });
+  const replyLabel = h('input', { type: 'text', placeholder: 'Label (optional)' });
+
+  const replyForm = h('div', { class: 'card', style: 'margin-top:18px; padding:14px 16px;' }, [
+    h('label', {}, ['Reply']),
+    replyBody,
+    h('div', { class: 'field-row', style: 'margin-top:10px;' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Attach']), replyKind]),
+      h('div', { class: 'field' }, [h('label', {}, ['URL']), replyUrl]),
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, ['Label (optional)']), replyLabel]),
+    h('div', { style: 'display:flex; justify-content:flex-end; gap:8px; margin-top:8px;' }, [
+      h('button', { class: 'btn btn-primary', onclick: async () => {
+        const body = replyBody.value.trim();
+        if (!body) { toast('Write a reply'); return; }
+        try {
+          const msg = await db.threadMessages.create({
+            threadId: thread.id,
+            body,
+            attachmentUrl: replyUrl.value.trim() || null,
+            attachmentKind: replyKind.value || null,
+            attachmentLabel: replyLabel.value.trim() || null,
+          });
+          state.store.messagesByThread[id] = [...(state.store.messagesByThread[id] || []), msg];
+          // Trigger bumps last_message_at and reopens if closed
+          thread.last_message_at = msg.created_at;
+          thread.status = 'open';
+          thread.closed_at = null;
+          replyBody.value = ''; replyUrl.value = ''; replyLabel.value = ''; replyKind.value = '';
+          render();
+        } catch (e) { toast('Failed: ' + e.message); }
+      } }, [icon('send'), 'Send reply']),
+    ]),
+  ]);
+  content.appendChild(replyForm);
+
+  wrap.appendChild(content);
+  return wrap;
 }
 
 // Public tracking page (anonymous, uses RPC)

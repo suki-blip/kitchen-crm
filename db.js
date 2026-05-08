@@ -323,6 +323,140 @@ export const tracking = {
   },
 };
 
+// ----- Task notes (timestamped log entries on a task) -----
+
+export const taskNotes = {
+  async listForTask(taskId) {
+    const { data, error } = await supabase
+      .from('task_notes')
+      .select('*')
+      .eq('task_id', taskId)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async create(taskId, body) {
+    const userId = (await supabase.auth.getUser()).data.user?.id;
+    const { data, error } = await supabase
+      .from('task_notes')
+      .insert({ task_id: taskId, body, author_id: userId })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async remove(id) {
+    const { error } = await supabase.from('task_notes').delete().eq('id', id);
+    if (error) throw error;
+  },
+};
+
+// ----- Threads (internal team Q&A) -----
+
+export const threads = {
+  // Fetch all threads where the current user is a participant.
+  async listMine() {
+    const { data, error } = await supabase
+      .from('threads')
+      .select('*')
+      .order('last_message_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async get(id) {
+    const { data, error } = await supabase.from('threads').select('*').eq('id', id).maybeSingle();
+    if (error) throw error;
+    return data;
+  },
+  async create({ recipientId, projectId, customerId, subject, urgency, body, attachmentUrl, attachmentKind, attachmentLabel }) {
+    const userId = (await supabase.auth.getUser()).data.user?.id;
+    const { data: thread, error: e1 } = await supabase
+      .from('threads')
+      .insert({
+        starter_id: userId,
+        recipient_id: recipientId,
+        project_id: projectId || null,
+        customer_id: customerId || null,
+        subject: subject || null,
+        urgency: urgency || 'normal',
+      })
+      .select()
+      .single();
+    if (e1) throw e1;
+    const { error: e2 } = await supabase.from('thread_messages').insert({
+      thread_id: thread.id,
+      author_id: userId,
+      body,
+      attachment_url: attachmentUrl || null,
+      attachment_kind: attachmentKind || null,
+      attachment_label: attachmentLabel || null,
+    });
+    if (e2) throw e2;
+    return thread;
+  },
+  async close(id) {
+    const { error } = await supabase
+      .from('threads')
+      .update({ status: 'closed', closed_at: new Date().toISOString() })
+      .eq('id', id);
+    if (error) throw error;
+  },
+  async reopen(id) {
+    const { error } = await supabase
+      .from('threads')
+      .update({ status: 'open', closed_at: null })
+      .eq('id', id);
+    if (error) throw error;
+  },
+  async setUrgency(id, urgency) {
+    const { error } = await supabase.from('threads').update({ urgency }).eq('id', id);
+    if (error) throw error;
+  },
+  async remove(id) {
+    const { error } = await supabase.from('threads').delete().eq('id', id);
+    if (error) throw error;
+  },
+};
+
+export const threadMessages = {
+  async listForThread(threadId) {
+    const { data, error } = await supabase
+      .from('thread_messages')
+      .select('*')
+      .eq('thread_id', threadId)
+      .order('created_at');
+    if (error) throw error;
+    return data || [];
+  },
+  async create({ threadId, body, attachmentUrl, attachmentKind, attachmentLabel }) {
+    const userId = (await supabase.auth.getUser()).data.user?.id;
+    const { data, error } = await supabase
+      .from('thread_messages')
+      .insert({
+        thread_id: threadId,
+        author_id: userId,
+        body,
+        attachment_url: attachmentUrl || null,
+        attachment_kind: attachmentKind || null,
+        attachment_label: attachmentLabel || null,
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return data;
+  },
+  async markRead(threadId) {
+    const userId = (await supabase.auth.getUser()).data.user?.id;
+    const { error } = await supabase
+      .from('thread_messages')
+      .update({ read_by_recipient_at: new Date().toISOString() })
+      .eq('thread_id', threadId)
+      .neq('author_id', userId)
+      .is('read_by_recipient_at', null);
+    if (error) console.warn('markRead failed', error);
+  },
+};
+
 // ----- Realtime -----
 
 export function subscribeAll(onChange) {
@@ -333,6 +467,9 @@ export function subscribeAll(onChange) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, p => onChange('tasks', p))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'files' }, p => onChange('files', p))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'activity' }, p => onChange('activity', p))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'task_notes' }, p => onChange('task_notes', p))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'threads' }, p => onChange('threads', p))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'thread_messages' }, p => onChange('thread_messages', p))
     .subscribe();
   return () => supabase.removeChannel(ch);
 }

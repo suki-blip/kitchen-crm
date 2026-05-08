@@ -821,6 +821,97 @@ ul.plain { list-style: none; padding: 0; margin: 0; }
 ul.plain li { padding: 8px 0; border-bottom: 1px solid var(--line-soft); font-size: 13px; }
 ul.plain li:last-child { border-bottom: none; }
 
+/* Task notes — log entries inside the edit-task modal */
+.task-notes-wrap {
+  max-height: 240px;
+  overflow-y: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  padding: 4px 12px;
+}
+.task-note {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.task-note:last-child { border-bottom: none; }
+.task-note-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.task-note-body {
+  font-size: 13px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+.btn-mini {
+  background: transparent;
+  border: 0;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 2px;
+  display: inline-flex;
+  align-items: center;
+  border-radius: 3px;
+}
+.btn-mini:hover { color: var(--danger); background: var(--danger-tint); }
+.btn-mini .ico { width: 12px; height: 12px; }
+
+/* Thread messages — Q&A bubbles */
+.thread-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 18px;
+}
+.thread-msg {
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  max-width: 78%;
+  align-self: flex-start;
+}
+.thread-msg.mine {
+  align-self: flex-end;
+  background: var(--gold-tint);
+  border-color: var(--gold-warm);
+}
+.thread-msg-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 4px;
+}
+.thread-msg-author { font-weight: 600; color: var(--text-dim); }
+.thread-msg-time { font-variant-numeric: tabular-nums; }
+.thread-msg-body {
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.5;
+}
+.thread-msg-attach {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--line);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.thread-msg-attach .ico { width: 12px; height: 12px; flex-shrink: 0; color: var(--text-faint); }
+.thread-msg-attach a { color: var(--gold); word-break: break-all; }
+
 /* Stack & spacing utilities (purposeful, used) */
 .stack-12 > * + * { margin-top: 12px; }
 .stack-18 > * + * { margin-top: 18px; }

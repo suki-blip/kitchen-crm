@@ -2300,6 +2300,16 @@ function renderTaskRow(t, showProject = false) {
   ]);
   row.appendChild(meta);
 
+  // Quick "+ Note" — adds a timestamped note without opening the full edit modal.
+  // Shows a count badge if notes for this task have been loaded into the cache.
+  const cachedNotes = state.store.notesByTask?.[t.id];
+  const noteCountLabel = cachedNotes && cachedNotes.length ? ' · ' + cachedNotes.length : '';
+  row.appendChild(h('button', {
+    class: 'btn btn-sm btn-ghost',
+    title: 'Add a note / progress update',
+    onclick: (e) => { e.stopPropagation(); openQuickNote(t); },
+  }, [icon('plus'), 'Note' + noteCountLabel]));
+
   if (!t.completed) {
     row.appendChild(h('button', { class: 'btn btn-sm btn-ghost', onclick: (e) => { e.stopPropagation(); openEditTask(t); } }, [icon('calendar'), 'Edit']));
   }
@@ -2309,6 +2319,82 @@ function renderTaskRow(t, showProject = false) {
   }
 
   return row;
+}
+
+// Quick note modal — focused, two fields only. Logs the note + lets the user open
+// the full task editor if they need more (priority, due date, full history).
+function openQuickNote(t) {
+  const ta = h('textarea', {
+    rows: 3,
+    placeholder: 'e.g. "Sent email to supplier, waiting for confirmation"',
+    autofocus: true,
+  });
+
+  // Show the existing notes log so the user has context, but compact.
+  const existing = h('div', { class: 'task-notes-wrap', style: 'max-height:140px; margin-bottom:14px;' });
+  const renderExisting = (notes) => {
+    clear(existing);
+    if (!notes || notes.length === 0) {
+      existing.appendChild(h('div', { class: 'muted-text', style: 'padding:8px 0;' }, ['No earlier notes on this task.']));
+      return;
+    }
+    notes.slice(0, 5).forEach(n => {
+      const author = state.store.users.find(u => u.id === n.author_id);
+      existing.appendChild(h('div', { class: 'task-note' }, [
+        h('div', { class: 'task-note-meta' }, [(author ? author.name : 'Someone') + ' · ' + fmtDateTime(n.created_at)]),
+        h('div', { class: 'task-note-body' }, [n.body]),
+      ]));
+    });
+    if (notes.length > 5) {
+      existing.appendChild(h('div', { class: 'muted-text', style: 'padding:6px 0;' }, ['+ ' + (notes.length - 5) + ' earlier — open Edit to see all.']));
+    }
+  };
+
+  // Lazy-load if not cached.
+  if (state.store.notesByTask?.[t.id]) {
+    renderExisting(state.store.notesByTask[t.id]);
+  } else {
+    existing.appendChild(h('div', { class: 'muted-text', style: 'padding:8px 0;' }, ['Loading earlier notes…']));
+    db.taskNotes.listForTask(t.id).then(rows => {
+      state.store.notesByTask = state.store.notesByTask || {};
+      state.store.notesByTask[t.id] = rows;
+      renderExisting(rows);
+    }).catch(e => console.error('notes load', e));
+  }
+
+  const body = h('div', {}, [
+    h('div', { class: 'muted-text', style: 'margin-bottom:6px;' }, [t.title]),
+    existing,
+    h('label', {}, ['New note']),
+    ta,
+  ]);
+
+  const saveBtn = h('button', { class: 'btn btn-primary' }, [icon('plus'), 'Add note']);
+  saveBtn.onclick = async () => {
+    const txt = ta.value.trim();
+    if (!txt) { toast('Write something to log'); return; }
+    saveBtn.disabled = true;
+    try {
+      const note = await db.taskNotes.create(t.id, txt);
+      state.store.notesByTask = state.store.notesByTask || {};
+      state.store.notesByTask[t.id] = [note, ...(state.store.notesByTask[t.id] || [])];
+      closeModal();
+      render();
+    } catch (e) {
+      toast('Failed: ' + e.message);
+      saveBtn.disabled = false;
+    }
+  };
+
+  const footer = h('div', {}, [
+    h('button', { class: 'btn btn-ghost', onclick: () => { closeModal(); openEditTask(t); } }, ['Open full editor']),
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    saveBtn,
+  ]);
+  modal({ title: 'Add note', body, footer });
+
+  // Focus the textarea after the modal is in the DOM.
+  setTimeout(() => ta.focus(), 0);
 }
 
 function openNewTask(onSaved) {

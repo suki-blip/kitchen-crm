@@ -351,30 +351,53 @@ export const taskNotes = {
   },
 };
 
-// ----- Threads (internal team Q&A) -----
+// ----- Threads (internal team Q&A, supports group conversations) -----
 
 export const threads = {
-  // Fetch all threads where the current user is a participant.
+  // Fetch all threads where the current user is a participant — RLS handles filtering.
+  // Each returned thread includes a `participants` array of user_ids (starter + recipients).
   async listMine() {
-    const { data, error } = await supabase
+    const { data: rows, error } = await supabase
       .from('threads')
       .select('*')
       .order('last_message_at', { ascending: false });
     if (error) throw error;
-    return data || [];
+    if (!rows?.length) return [];
+
+    // Load participants for all visible threads in one round trip.
+    const ids = rows.map(t => t.id);
+    const { data: parts, error: pe } = await supabase
+      .from('thread_participants')
+      .select('thread_id, user_id')
+      .in('thread_id', ids);
+    if (pe) throw pe;
+
+    const byThread = {};
+    (parts || []).forEach(p => {
+      (byThread[p.thread_id] ||= []).push(p.user_id);
+    });
+    return rows.map(t => ({ ...t, participants: byThread[t.id] || [] }));
   },
   async get(id) {
     const { data, error } = await supabase.from('threads').select('*').eq('id', id).maybeSingle();
     if (error) throw error;
-    return data;
+    if (!data) return null;
+    const { data: parts } = await supabase
+      .from('thread_participants').select('user_id').eq('thread_id', id);
+    return { ...data, participants: (parts || []).map(p => p.user_id) };
   },
-  async create({ recipientId, projectId, customerId, subject, urgency, body, attachmentUrl, attachmentKind, attachmentLabel }) {
+  // Create a thread with one or more recipients. The starter is added too.
+  async create({ recipientIds, projectId, customerId, subject, urgency, body, attachmentUrl, attachmentKind, attachmentLabel }) {
     const userId = (await supabase.auth.getUser()).data.user?.id;
+    const ids = (recipientIds || []).filter(Boolean);
+    if (ids.length === 0) throw new Error('Pick at least one recipient');
+
+    // 1) Create the thread row. recipient_id stores the "primary" (first) for backward compat.
     const { data: thread, error: e1 } = await supabase
       .from('threads')
       .insert({
         starter_id: userId,
-        recipient_id: recipientId,
+        recipient_id: ids[0],
         project_id: projectId || null,
         customer_id: customerId || null,
         subject: subject || null,
@@ -383,7 +406,17 @@ export const threads = {
       .select()
       .single();
     if (e1) throw e1;
-    const { error: e2 } = await supabase.from('thread_messages').insert({
+
+    // 2) Add all participants (starter + recipients). Conflict-safe via PRIMARY KEY (thread_id, user_id).
+    const participants = Array.from(new Set([userId, ...ids])).map(uid => ({
+      thread_id: thread.id,
+      user_id: uid,
+    }));
+    const { error: e2 } = await supabase.from('thread_participants').insert(participants);
+    if (e2 && e2.code !== '23505') throw e2; // ignore duplicate-pk
+
+    // 3) Post the first message.
+    const { error: e3 } = await supabase.from('thread_messages').insert({
       thread_id: thread.id,
       author_id: userId,
       body,
@@ -391,8 +424,9 @@ export const threads = {
       attachment_kind: attachmentKind || null,
       attachment_label: attachmentLabel || null,
     });
-    if (e2) throw e2;
-    return thread;
+    if (e3) throw e3;
+
+    return { ...thread, participants: participants.map(p => p.user_id) };
   },
   async close(id) {
     const { error } = await supabase
@@ -414,6 +448,32 @@ export const threads = {
   },
   async remove(id) {
     const { error } = await supabase.from('threads').delete().eq('id', id);
+    if (error) throw error;
+  },
+};
+
+// Manage participants of an existing thread (starter or admin only — RLS enforces).
+export const threadParticipants = {
+  async listForThread(threadId) {
+    const { data, error } = await supabase
+      .from('thread_participants')
+      .select('user_id, added_at')
+      .eq('thread_id', threadId);
+    if (error) throw error;
+    return data || [];
+  },
+  async add(threadId, userId) {
+    const { error } = await supabase
+      .from('thread_participants')
+      .insert({ thread_id: threadId, user_id: userId });
+    if (error && error.code !== '23505') throw error; // ignore duplicate
+  },
+  async remove(threadId, userId) {
+    const { error } = await supabase
+      .from('thread_participants')
+      .delete()
+      .eq('thread_id', threadId)
+      .eq('user_id', userId);
     if (error) throw error;
   },
 };
@@ -470,6 +530,7 @@ export function subscribeAll(onChange) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'task_notes' }, p => onChange('task_notes', p))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'threads' }, p => onChange('threads', p))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'thread_messages' }, p => onChange('thread_messages', p))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'thread_participants' }, p => onChange('thread_participants', p))
     .subscribe();
   return () => supabase.removeChannel(ch);
 }

@@ -592,7 +592,9 @@ function renderSidebar() {
   const leadCount    = state.store.projects.filter(p => stagePhase(p.stage) === 'lead').length;
   const projectCount = state.store.projects.filter(p => stagePhase(p.stage) === 'active').length;
   const myTasks      = state.store.tasks.filter(t => !t.completed && t.assignedTo === u.id).length;
-  const myInbox = (state.store.threads || []).filter(t => t.recipient_id === u.id && t.status === 'open').length;
+  const myInbox = (state.store.threads || []).filter(t =>
+    t.status === 'open' && t.starter_id !== u.id && (t.participants || [t.recipient_id]).includes(u.id)
+  ).length;
 
   const navItems = [
     { route: 'dashboard', label: 'Dashboard', ico: 'dashboard' },
@@ -2640,32 +2642,117 @@ function renderThreadRow(t) {
   const u = currentUser();
   const ur = URGENCY[t.urgency] || URGENCY.normal;
   const starter = state.store.users.find(x => x.id === t.starter_id);
-  const recipient = state.store.users.find(x => x.id === t.recipient_id);
   const proj = state.store.projects.find(p => p.id === t.project_id);
   const cust = state.store.customers.find(c => c.id === t.customer_id) || (proj && customerOf(proj));
-  const otherParty = t.starter_id === u.id ? recipient : starter;
-  const direction = t.starter_id === u.id ? 'To: ' : 'From: ';
+
+  // Build the people summary: starter + other participants (excluding the current user).
+  const participantIds = (t.participants && t.participants.length) ? t.participants : [t.recipient_id].filter(Boolean);
+  const isMine = t.starter_id === u.id;
+  const others = participantIds
+    .filter(id => id !== u.id && id !== t.starter_id)
+    .map(id => state.store.users.find(x => x.id === id)?.name)
+    .filter(Boolean);
+  const groupSize = participantIds.length + (participantIds.includes(t.starter_id) ? 0 : 1);
+  let peopleLabel;
+  if (isMine) {
+    peopleLabel = 'To: ' + (others.length ? others.join(', ') : '—');
+  } else {
+    peopleLabel = 'From: ' + (starter?.name || 'Unknown');
+    if (others.length) peopleLabel += ' · also: ' + others.join(', ');
+  }
 
   const row = h('div', { class: 'task-row' + (t.status === 'closed' ? ' done' : '') + (ur.id !== 'normal' ? ' pri-' + t.urgency : ''), onclick: () => navigate('messages/' + t.id) });
 
   row.appendChild(h('div', { class: 'ttitle' }, [
     ur.id !== 'normal' ? h('span', { class: 'tag ' + ur.tag + ' tag-pri' }, [ur.label]) : null,
     h('span', { style: 'font-weight:600;' }, [t.subject || '(no subject)']),
+    groupSize > 2 ? h('span', { class: 'tag dim' }, [icon('customers'), 'Group · ' + groupSize]) : null,
     cust ? h('span', { class: 'faint-text' }, [' · ' + cust.name]) : null,
     proj?.address ? h('span', { class: 'faint-text' }, [' · ' + proj.address]) : null,
   ]));
   row.appendChild(h('div', { class: 'tmeta' }, [
-    h('span', {}, [direction + (otherParty ? otherParty.name : 'Unknown')]),
+    h('span', {}, [peopleLabel]),
     h('span', { class: 'tmeta-due' }, [icon('calendar'), ' ', fmtShortDate(t.last_message_at)]),
     t.status === 'closed' ? h('span', { class: 'tag dim' }, ['Closed']) : null,
   ]));
   return row;
 }
 
+function openAddParticipants(thread) {
+  const u = currentUser();
+  const existing = new Set(thread.participants || [thread.starter_id, thread.recipient_id].filter(Boolean));
+  const candidates = state.store.users.filter(x => x.active && !existing.has(x.id) && x.id !== u.id);
+
+  if (candidates.length === 0) {
+    modal({
+      title: 'Add people',
+      body: h('div', { class: 'muted-text' }, ['Everyone is already in this conversation.']),
+      footer: h('div', {}, [h('button', { class: 'btn btn-primary', onclick: closeModal }, ['OK'])]),
+    });
+    return;
+  }
+
+  const list = h('div', { class: 'recipient-picker' });
+  const checks = candidates.map(x => {
+    const cb = h('input', { type: 'checkbox', value: x.id });
+    list.appendChild(h('label', { class: 'recipient-row' }, [
+      cb,
+      h('span', { class: 'recipient-name' }, [x.name]),
+      h('span', { class: 'recipient-role' }, [ROLES[x.role].label]),
+    ]));
+    return cb;
+  });
+
+  const body = h('div', {}, [
+    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, ['Pick the teammates you want to add to this conversation. They will see the full message history.']),
+    list,
+  ]);
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    h('button', { class: 'btn btn-primary', onclick: async () => {
+      const picked = checks.filter(c => c.checked).map(c => c.value);
+      if (picked.length === 0) { toast('Pick at least one person'); return; }
+      try {
+        for (const uid of picked) await db.threadParticipants.add(thread.id, uid);
+        thread.participants = [...(thread.participants || []), ...picked];
+        closeModal();
+        render();
+      } catch (e) { toast('Failed: ' + e.message); }
+    } }, [icon('plus'), 'Add to conversation']),
+  ]);
+  modal({ title: 'Add people', body, footer });
+}
+
 function openComposeThread(opts = {}) {
   const u = currentUser();
-  const recipientSel = h('select', {}, state.store.users.filter(x => x.active && x.id !== u.id).map(x => h('option', { value: x.id }, [x.name + ' · ' + ROLES[x.role].label])));
-  if (opts.recipientId) recipientSel.value = opts.recipientId;
+  const candidates = state.store.users.filter(x => x.active && x.id !== u.id);
+
+  // Multi-select recipients via a checkbox list (supports group conversations).
+  const preselected = new Set(
+    Array.isArray(opts.recipientIds) ? opts.recipientIds :
+    (opts.recipientId ? [opts.recipientId] : [])
+  );
+  const recipientList = h('div', { class: 'recipient-picker' });
+  const checkboxes = candidates.map(x => {
+    const cb = h('input', { type: 'checkbox', value: x.id });
+    if (preselected.has(x.id)) cb.checked = true;
+    const row = h('label', { class: 'recipient-row' }, [
+      cb,
+      h('span', { class: 'recipient-name' }, [x.name]),
+      h('span', { class: 'recipient-role' }, [ROLES[x.role].label]),
+    ]);
+    recipientList.appendChild(row);
+    return cb;
+  });
+  const summary = h('div', { class: 'muted-text', style: 'margin-top:6px;' }, []);
+  const updateSummary = () => {
+    const n = checkboxes.filter(c => c.checked).length;
+    summary.textContent = n === 0
+      ? 'No recipients selected.'
+      : (n === 1 ? '1 recipient selected.' : n + ' recipients — group chat.');
+  };
+  checkboxes.forEach(c => c.addEventListener('change', updateSummary));
+  updateSummary();
 
   const projectSel = h('select', {}, [
     h('option', { value: '' }, ['(no project)']),
@@ -2692,7 +2779,11 @@ function openComposeThread(opts = {}) {
   const attachLabel = h('input', { type: 'text', placeholder: 'Label (optional)' });
 
   const bodyEl = h('div', {}, [
-    h('div', { class: 'field' }, [h('label', {}, ['To']), recipientSel]),
+    h('div', { class: 'field' }, [
+      h('label', {}, ['To (one or more)']),
+      recipientList,
+      summary,
+    ]),
     h('div', { class: 'field-row' }, [
       h('div', { class: 'field' }, [h('label', {}, ['Project (optional)']), projectSel]),
       h('div', { class: 'field' }, [h('label', {}, ['Urgency']), urgencySel]),
@@ -2708,12 +2799,13 @@ function openComposeThread(opts = {}) {
   const footer = h('div', {}, [
     h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
     h('button', { class: 'btn btn-primary', onclick: async () => {
-      if (!recipientSel.value) { toast('Pick a recipient'); return; }
+      const recipientIds = checkboxes.filter(c => c.checked).map(c => c.value);
+      if (recipientIds.length === 0) { toast('Pick at least one recipient'); return; }
       if (!body.value.trim()) { toast('Write a message body'); return; }
       try {
         const proj = state.store.projects.find(p => p.id === projectSel.value);
         const thread = await db.threads.create({
-          recipientId: recipientSel.value,
+          recipientIds,
           projectId: projectSel.value || null,
           customerId: proj?.customerId || null,
           subject: subject.value.trim() || null,
@@ -2748,9 +2840,15 @@ function renderThreadDetail(id) {
   const isStarter = thread.starter_id === u.id;
   const ur = URGENCY[thread.urgency] || URGENCY.normal;
   const starter = state.store.users.find(x => x.id === thread.starter_id);
-  const recipient = state.store.users.find(x => x.id === thread.recipient_id);
   const proj = state.store.projects.find(p => p.id === thread.project_id);
   const cust = state.store.customers.find(c => c.id === thread.customer_id) || (proj && customerOf(proj));
+
+  // Participants (cached on the thread by the loader; fall back to recipient_id for legacy rows).
+  const participantIds = (thread.participants && thread.participants.length)
+    ? thread.participants
+    : [thread.starter_id, thread.recipient_id].filter(Boolean);
+  const others = participantIds.filter(id => id !== thread.starter_id);
+  const otherNames = others.map(id => state.store.users.find(x => x.id === id)?.name).filter(Boolean);
 
   const actions = [
     h('button', { class: 'btn btn-sm btn-ghost', onclick: () => navigate('messages') }, ['← Inbox']),
@@ -2772,15 +2870,55 @@ function renderThreadDetail(id) {
     } }, [icon('trash')]),
   ];
 
+  const subtitleParts = [
+    'Started by ' + (starter?.name || 'Unknown'),
+    otherNames.length > 0 ? 'with ' + otherNames.join(', ') : null,
+    cust ? cust.name : null,
+    proj?.address || null,
+    ur.id !== 'normal' ? ur.label + ' urgency' : null,
+    thread.status === 'closed' ? 'Closed' : null,
+  ].filter(Boolean);
+
   wrap.appendChild(topbar(thread.subject || '(no subject)', actions, {
-    subtitle: (isStarter ? 'To ' + (recipient?.name || 'Unknown') : 'From ' + (starter?.name || 'Unknown'))
-      + (cust ? ' · ' + cust.name : '')
-      + (proj?.address ? ' · ' + proj.address : '')
-      + (ur.id !== 'normal' ? ' · ' + ur.label + ' urgency' : '')
-      + (thread.status === 'closed' ? ' · Closed' : ''),
+    subtitle: subtitleParts.join(' · '),
   }));
 
   const content = h('div', { class: 'content' });
+
+  // Participant chip bar (with add/remove for the starter).
+  const partsBar = h('div', { class: 'thread-parts' });
+  participantIds.forEach(pid => {
+    const person = state.store.users.find(x => x.id === pid);
+    if (!person) return;
+    const isStarterChip = pid === thread.starter_id;
+    const canRemove = isStarter && !isStarterChip;
+    partsBar.appendChild(h('span', { class: 'thread-part-chip' + (isStarterChip ? ' starter' : '') }, [
+      h('span', {}, [initials(person.name)]),
+      h('span', {}, [person.name]),
+      isStarterChip ? h('span', { class: 'faint-text' }, ['(started)']) : null,
+      canRemove ? h('button', {
+        class: 'btn-mini',
+        title: 'Remove from conversation',
+        onclick: async () => {
+          if (!confirm('Remove ' + person.name + ' from this conversation?')) return;
+          try {
+            await db.threadParticipants.remove(thread.id, pid);
+            thread.participants = (thread.participants || []).filter(x => x !== pid);
+            render();
+          } catch (e) { toast('Failed: ' + e.message); }
+        },
+      }, [icon('trash')]) : null,
+    ]));
+  });
+  if (isStarter) {
+    partsBar.appendChild(h('button', {
+      class: 'btn btn-sm btn-ghost',
+      style: 'margin-left:auto;',
+      onclick: () => openAddParticipants(thread),
+    }, [icon('plus'), 'Add people']));
+  }
+  content.appendChild(h('div', { class: 'card', style: 'padding:12px 14px;' }, [partsBar]));
+  content.appendChild(h('div', { style: 'height:14px;' }));
   const messagesCard = h('div', { class: 'card' });
   const messagesList = h('div', { class: 'thread-messages' });
   messagesCard.appendChild(messagesList);

@@ -517,6 +517,44 @@ export const threadMessages = {
   },
 };
 
+// ----- Incoming emails (inbox for triage) -----
+
+export const emails = {
+  async list() {
+    const { data, error } = await supabase
+      .from('emails')
+      .select('*')
+      .order('received_at', { ascending: false });
+    if (error) throw error;
+    return data || [];
+  },
+  async create(row) {
+    // row: { from_email, from_name?, to_emails?, subject?, snippet?, body_text?, received_at, message_id?, source? }
+    const { data, error } = await supabase.from('emails').insert(row).select().single();
+    if (error) throw error;
+    return data;
+  },
+  async update(id, patch) {
+    const { error } = await supabase.from('emails').update(patch).eq('id', id);
+    if (error) throw error;
+  },
+  async archive(id) {
+    return this.update(id, { status: 'archived', triaged_at: new Date().toISOString() });
+  },
+  async markConverted(id, kind, { taskId, projectId, customerId }) {
+    const status = kind === 'task' ? 'converted_task' : kind === 'lead' ? 'converted_lead' : 'converted_both';
+    const patch = { status, triaged_at: new Date().toISOString() };
+    if (taskId)     patch.converted_to_task_id = taskId;
+    if (projectId)  patch.converted_to_project_id = projectId;
+    if (customerId) patch.converted_to_customer_id = customerId;
+    return this.update(id, patch);
+  },
+  async remove(id) {
+    const { error } = await supabase.from('emails').delete().eq('id', id);
+    if (error) throw error;
+  },
+};
+
 // ----- Realtime -----
 
 export function subscribeAll(onChange) {
@@ -531,6 +569,7 @@ export function subscribeAll(onChange) {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'threads' }, p => onChange('threads', p))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'thread_messages' }, p => onChange('thread_messages', p))
     .on('postgres_changes', { event: '*', schema: 'public', table: 'thread_participants' }, p => onChange('thread_participants', p))
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'emails' }, p => onChange('emails', p))
     .subscribe();
   return () => supabase.removeChannel(ch);
 }

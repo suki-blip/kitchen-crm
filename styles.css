@@ -1018,6 +1018,27 @@ ul.plain li:last-child { border-bottom: none; }
   .wizard-row > .muted-text { display: none; }
 }
 
+/* Email triage modal */
+.email-head {
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: 10px 14px;
+  font-size: 13px;
+}
+.email-body {
+  background: var(--bg-elev);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-md);
+  padding: 14px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  line-height: 1.55;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
 /* Stack & spacing utilities (purposeful, used) */
 .stack-12 > * + * { margin-top: 12px; }
 .stack-18 > * + * { margin-top: 18px; }

@@ -133,21 +133,23 @@ function trackedArray(table, arr) {
 }
 
 async function loadAll() {
-  const [profiles, customers, projects, tasks, threads] = await Promise.all([
+  const [profiles, customers, projects, tasks, threads, emails] = await Promise.all([
     db.profiles.list(),
     db.customers.list(),
     db.projects.list(),
     db.tasks.list(),
     db.threads.listMine(),
+    db.emails.list().catch(e => { console.warn('emails load skipped', e); return []; }),
   ]);
   _dirty.customers.clear(); _dirty.projects.clear(); _dirty.tasks.clear();
   state.store = {
-    schemaVersion: 4,
+    schemaVersion: 5,
     users: profiles,
     customers: trackedArray('customers', customers.map(c => trackedEntity('customers', c))),
     projects: trackedArray('projects', projects.map(p => trackedEntity('projects', p))),
     tasks: trackedArray('tasks', tasks.map(t => trackedEntity('tasks', t))),
     threads,
+    emails,
     activity: [],          // loaded per-project on demand
     filesByProject: {},    // loaded per-project on demand
     activityByProject: {}, // loaded per-project on demand
@@ -340,6 +342,7 @@ function parseHash() {
     case 'tasks':     return { name: 'tasks', params: {} };
     case 'users':     return { name: 'users', params: {} };
     case 'messages':  return parts[1] ? { name: 'thread', params: { id: parts[1] } } : { name: 'messages', params: {} };
+    case 'inbox':     return { name: 'inbox', params: {} };
     case 'track':     return { name: 'track', params: { token: parts[1] } };
     default:          return { name: 'dashboard', params: {} };
   }
@@ -572,6 +575,7 @@ function renderShell() {
     case 'users':     main.appendChild(renderUsersPage()); break;
     case 'messages':  main.appendChild(renderMessagesPage()); break;
     case 'thread':    main.appendChild(renderThreadDetail(state.route.params.id)); break;
+    case 'inbox':     main.appendChild(renderInboxPage()); break;
     default:          main.appendChild(renderDashboard());
   }
 
@@ -595,9 +599,11 @@ function renderSidebar() {
   const myInbox = (state.store.threads || []).filter(t =>
     t.status === 'open' && t.starter_id !== u.id && (t.participants || [t.recipient_id]).includes(u.id)
   ).length;
+  const newEmails = (state.store.emails || []).filter(e => e.status === 'new').length;
 
   const navItems = [
     { route: 'dashboard', label: 'Dashboard', ico: 'dashboard' },
+    { route: 'inbox',     label: 'Inbox',     ico: 'inbox',     count: newEmails },
     { route: 'leads',     label: 'Leads',     ico: 'leads',     count: leadCount },
     { route: 'projects',  label: 'Projects',  ico: 'projects',  count: projectCount },
     { route: 'customers', label: 'Customers', ico: 'customers', count: state.store.customers.length },
@@ -3095,6 +3101,306 @@ function renderThreadDetail(id) {
 
   wrap.appendChild(content);
   return wrap;
+}
+
+// ----- Email inbox (triage incoming emails to tasks / leads) -----
+// Stage 1: emails are inserted manually via "Test: Paste email" or simulated by an admin.
+// Stage 2 (next): a Supabase Edge Function will poll Gmail OAuth and insert rows automatically.
+
+function renderInboxPage() {
+  const u = currentUser();
+  const wrap = h('div');
+  wrap.appendChild(topbar('Inbox', [
+    h('button', { class: 'btn', onclick: () => openPasteEmail(refresh) }, [icon('plus'), 'Paste email']),
+    h('button', { class: 'btn btn-ghost', title: 'Gmail sync — coming in stage 2', onclick: () => toast('Gmail OAuth sync will be wired up in stage 2.') }, ['Sync Gmail (soon)']),
+  ], { subtitle: 'Triage incoming emails — convert each to a task, a new lead, or archive.' }));
+
+  const filterSel = h('select', {}, [
+    h('option', { value: 'new' }, ['New · needs triage']),
+    h('option', { value: 'all' }, ['All emails']),
+    h('option', { value: 'archived' }, ['Archived']),
+    h('option', { value: 'converted' }, ['Converted']),
+  ]);
+
+  const content = h('div', { class: 'content' });
+  const listWrap = h('div');
+
+  const refresh = () => {
+    clear(listWrap);
+    let list = (state.store.emails || []).slice();
+    const f = filterSel.value;
+    if (f === 'new') list = list.filter(e => e.status === 'new');
+    else if (f === 'archived') list = list.filter(e => e.status === 'archived');
+    else if (f === 'converted') list = list.filter(e => e.status && e.status.startsWith('converted'));
+
+    if (list.length === 0) {
+      listWrap.appendChild(emptyState({
+        icon: 'inbox',
+        title: f === 'new' ? 'Inbox is clear' : 'Nothing to show',
+        text: f === 'new'
+          ? 'No new emails awaiting triage. Click "Paste email" to test the flow with a sample.'
+          : 'Try changing the filter.',
+      }));
+      return;
+    }
+
+    list.sort((a, b) => (b.received_at || '').localeCompare(a.received_at || ''));
+    list.forEach(e => listWrap.appendChild(renderEmailRow(e, refresh)));
+  };
+  filterSel.addEventListener('change', refresh);
+
+  content.appendChild(h('div', { class: 'toolbar' }, [filterSel]));
+  content.appendChild(h('div', { class: 'card' }, [listWrap]));
+  refresh();
+  wrap.appendChild(content);
+  return wrap;
+}
+
+function renderEmailRow(e, refresh) {
+  const statusTag = e.status === 'new'      ? { label: 'New',      cls: 'gold' }
+                  : e.status === 'archived' ? { label: 'Archived', cls: 'dim' }
+                  : e.status && e.status.startsWith('converted') ? { label: 'Converted', cls: 'ok' }
+                  : { label: e.status || '—', cls: '' };
+
+  const row = h('div', { class: 'task-row' + (e.status !== 'new' ? ' done' : '') });
+
+  // Sender + subject + snippet
+  row.appendChild(h('div', { class: 'ttitle' }, [
+    h('span', { class: 'tag ' + statusTag.cls + ' tag-pri' }, [statusTag.label]),
+    h('span', { style: 'font-weight:600;' }, [e.subject || '(no subject)']),
+    h('div', { class: 'faint-text', style: 'margin-top:2px;' }, [
+      'From: ' + (e.from_name ? e.from_name + ' <' + e.from_email + '>' : e.from_email),
+    ]),
+    e.snippet || e.body_text ? h('div', { class: 'faint-text', style: 'margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;' }, [
+      (e.snippet || e.body_text).slice(0, 120),
+    ]) : null,
+  ]));
+
+  row.appendChild(h('div', { class: 'tmeta' }, [
+    h('span', { class: 'tmeta-due' }, [icon('calendar'), ' ', fmtShortDate(e.received_at)]),
+  ]));
+
+  if (e.status === 'new') {
+    row.appendChild(h('button', { class: 'btn btn-sm btn-primary', onclick: () => openTriageEmail(e, refresh) }, ['Triage']));
+  } else {
+    row.appendChild(h('button', { class: 'btn btn-sm btn-ghost', onclick: () => openTriageEmail(e, refresh) }, ['View']));
+  }
+  return row;
+}
+
+// Paste-an-email helper (Stage 1 test mechanism; Stage 2 will replace with Gmail OAuth sync)
+function openPasteEmail(onSaved) {
+  const fromName  = h('input', { type: 'text',  placeholder: 'Jane Smith' });
+  const fromEmail = h('input', { type: 'email', placeholder: 'jane@example.com' });
+  const subject   = h('input', { type: 'text',  placeholder: 'Looking for a quote' });
+  const body      = h('textarea', { rows: 5, placeholder: 'Hi, I\'m interested in a new kitchen…' });
+  const received  = h('input', { type: 'datetime-local', value: new Date().toISOString().slice(0, 16) });
+
+  const bodyEl = h('div', {}, [
+    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, ['Paste the email manually. In stage 2 this will be populated automatically from Gmail.']),
+    h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['From name (optional)']), fromName]),
+      h('div', { class: 'field' }, [h('label', {}, ['From email']), fromEmail]),
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, ['Subject']), subject]),
+    h('div', { class: 'field' }, [h('label', {}, ['Body']), body]),
+    h('div', { class: 'field' }, [h('label', {}, ['Received at']), received]),
+  ]);
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    h('button', { class: 'btn btn-primary', onclick: async () => {
+      if (!fromEmail.value.trim()) { toast('From email required'); return; }
+      try {
+        const e = await db.emails.create({
+          from_email: fromEmail.value.trim(),
+          from_name:  fromName.value.trim() || null,
+          subject:    subject.value.trim() || null,
+          body_text:  body.value,
+          snippet:    body.value.slice(0, 200),
+          received_at: new Date(received.value || Date.now()).toISOString(),
+          source: 'manual',
+        });
+        state.store.emails = [e, ...(state.store.emails || [])];
+        closeModal();
+        onSaved?.();
+        render();
+      } catch (err) { toast('Failed: ' + err.message); }
+    } }, ['Add to inbox']),
+  ]);
+  modal({ title: 'Paste email (test)', body: bodyEl, footer });
+}
+
+// Triage modal — shows the email + 3 actions (Make task / Make lead / Archive)
+function openTriageEmail(e, onSaved) {
+  // Try to match an existing customer by from_email
+  const matchedCustomer = state.store.customers.find(c => (c.email || '').toLowerCase() === (e.from_email || '').toLowerCase());
+
+  const body = h('div', {}, [
+    h('div', { class: 'email-head' }, [
+      h('div', { class: 'email-from' }, [
+        h('strong', {}, [e.from_name || e.from_email]),
+        e.from_name ? h('span', { class: 'faint-text' }, [' <' + e.from_email + '>']) : null,
+      ]),
+      h('div', { class: 'faint-text', style: 'margin-top:2px;' }, ['Received ' + fmtDateTime(e.received_at)]),
+      matchedCustomer
+        ? h('div', { style: 'margin-top:6px;' }, [
+            h('span', { class: 'tag ok' }, ['Matches existing customer']),
+            ' ',
+            h('a', { href: '#/customers/' + matchedCustomer.id }, [matchedCustomer.name]),
+          ])
+        : h('div', { style: 'margin-top:6px;' }, [h('span', { class: 'tag dim' }, ['No matching customer'])]),
+    ]),
+    h('h3', { style: 'margin:14px 0 6px; font-size:16px;' }, [e.subject || '(no subject)']),
+    h('div', { class: 'email-body' }, [e.body_text || h('span', { class: 'faint-text' }, ['(no body)'])]),
+    e.status !== 'new' ? h('div', { class: 'muted-text', style: 'margin-top:12px;' }, [
+      'Status: ' + e.status + (e.triaged_at ? ' · ' + fmtDateTime(e.triaged_at) : ''),
+    ]) : null,
+  ]);
+
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Close']),
+    e.status === 'new' ? h('button', { class: 'btn btn-ghost', onclick: async () => {
+      try { await db.emails.archive(e.id); e.status = 'archived'; closeModal(); onSaved?.(); render(); } catch (err) { toast('Failed: ' + err.message); }
+    } }, ['Archive']) : null,
+    e.status === 'new' ? h('button', { class: 'btn', onclick: () => { closeModal(); openMakeTaskFromEmail(e, matchedCustomer, onSaved); } }, [icon('tasks'), 'Make task']) : null,
+    e.status === 'new' ? h('button', { class: 'btn btn-primary', onclick: () => { closeModal(); openMakeLeadFromEmail(e, matchedCustomer, onSaved); } }, [icon('leads'), 'Make lead']) : null,
+  ]);
+  modal({ title: 'Email — ' + (e.subject || '(no subject)'), body, footer, size: 'lg' });
+}
+
+function openMakeTaskFromEmail(e, matchedCustomer, onSaved) {
+  const title = h('input', { type: 'text', value: 'Follow up: ' + (e.subject || 'email from ' + (e.from_name || e.from_email)) });
+  const assignee = h('select', {}, state.store.users.filter(u => u.active).map(u => h('option', { value: u.id }, [u.name])));
+  assignee.value = state.session.userId;
+  const due = h('input', { type: 'date', value: addDays(new Date(), 2).toISOString().slice(0, 10) });
+  const priority = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
+  priority.value = 'high';
+
+  // Optional project link — only customer's existing projects, or none.
+  const projectOptions = [h('option', { value: '' }, ['(no project)'])];
+  if (matchedCustomer) {
+    projectsOfCustomer(matchedCustomer.id).forEach(p => {
+      projectOptions.push(h('option', { value: p.id }, [(p.address || 'project') + ' · ' + stageDef(p.stage).label]));
+    });
+  }
+  const projectSel = h('select', {}, projectOptions);
+
+  const body = h('div', {}, [
+    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, ['Creates a task. The email body becomes the first note on it.']),
+    h('div', { class: 'field' }, [h('label', {}, ['Task title']), title]),
+    h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Assignee']), assignee]),
+      h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
+    ]),
+    h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Priority']), priority]),
+      h('div', { class: 'field' }, [h('label', {}, ['Link to project (optional)']), projectSel]),
+    ]),
+  ]);
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    h('button', { class: 'btn btn-primary', onclick: async () => {
+      if (!title.value.trim()) { toast('Title required'); return; }
+      try {
+        const task = await addTask({
+          title: title.value.trim(),
+          projectId: projectSel.value || null,
+          assignedTo: assignee.value,
+          dueDate: due.value || null,
+          priority: priority.value || 'normal',
+          completed: false,
+        });
+        // Attach the email body as the first note for context
+        const noteBody =
+          'From: ' + (e.from_name ? e.from_name + ' <' + e.from_email + '>' : e.from_email) +
+          '\nSubject: ' + (e.subject || '(no subject)') +
+          '\n\n' + (e.body_text || '');
+        try { await db.taskNotes.create(task.id, noteBody); } catch (err) { console.warn('note attach failed', err); }
+        await db.emails.markConverted(e.id, 'task', { taskId: task.id });
+        e.status = 'converted_task';
+        e.converted_to_task_id = task.id;
+        closeModal();
+        toast('Task created from email');
+        onSaved?.();
+        render();
+      } catch (err) { toast('Failed: ' + err.message); }
+    } }, [icon('check'), 'Create task']),
+  ]);
+  modal({ title: 'New task from email', body, footer });
+}
+
+function openMakeLeadFromEmail(e, matchedCustomer, onSaved) {
+  const useExisting = !!matchedCustomer;
+  const cName  = h('input', { type: 'text',  value: e.from_name || '' });
+  const cPhone = h('input', { type: 'tel',   placeholder: '(212) 555-0123' });
+  const cEmail = h('input', { type: 'email', value: e.from_email || '' });
+  const pAddr  = h('input', { type: 'text',  placeholder: 'Project site address' });
+  const pSource = h('select', {}, [
+    h('option', { value: 'Email' }, ['Email']),
+    ...['Website','Referral','Walk-in','Showroom','Phone','Instagram','Other'].map(s => h('option', { value: s }, [s])),
+  ]);
+  const pAssignee = h('select', {}, state.store.users.filter(u => u.active).map(u => h('option', { value: u.id }, [u.name + ' · ' + ROLES[u.role].label])));
+  pAssignee.value = state.session.userId;
+
+  const body = h('div', {}, [
+    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, [
+      useExisting
+        ? 'Existing customer detected. A new lead will be created under "' + matchedCustomer.name + '".'
+        : 'Creates a new customer + a new lead. The email subject and body are kept as activity log on the lead.',
+    ]),
+    useExisting ? null : h('div', { class: 'field' }, [h('label', {}, ['Customer name']), cName]),
+    useExisting ? null : h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Phone']), cPhone]),
+      h('div', { class: 'field' }, [h('label', {}, ['Email']), cEmail]),
+    ]),
+    h('div', { class: 'field' }, [h('label', {}, ['Project site address']), pAddr]),
+    h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Source']), pSource]),
+      h('div', { class: 'field' }, [h('label', {}, ['Assigned to']), pAssignee]),
+    ]),
+  ]);
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    h('button', { class: 'btn btn-primary', onclick: async () => {
+      if (!pAddr.value.trim()) { toast('Project address required'); return; }
+      try {
+        let customerId;
+        if (useExisting) {
+          customerId = matchedCustomer.id;
+        } else {
+          if (!cName.value.trim()) { toast('Customer name required'); return; }
+          const cust = await addCustomer({
+            name:           cName.value.trim(),
+            phone:          cPhone.value.trim(),
+            email:          cEmail.value.trim(),
+            generalAddress: pAddr.value.trim(),
+            notes:          '',
+          });
+          customerId = cust.id;
+        }
+        const proj = await createProject({
+          customerId,
+          address: pAddr.value.trim(),
+          source:  pSource.value,
+          assignedTo: pAssignee.value,
+          stage: 'lead',
+        });
+        // Log the email content into the project's activity feed
+        try {
+          logActivity(proj.id, 'Lead from email: ' + (e.subject || '(no subject)'));
+        } catch (err) { /* non-blocking */ }
+        await db.emails.markConverted(e.id, 'lead', { projectId: proj.id, customerId });
+        e.status = 'converted_lead';
+        e.converted_to_project_id = proj.id;
+        e.converted_to_customer_id = customerId;
+        closeModal();
+        toast('Lead created from email');
+        onSaved?.();
+        navigate('projects/' + proj.id);
+      } catch (err) { toast('Failed: ' + err.message); }
+    } }, [icon('check'), 'Create lead']),
+  ]);
+  modal({ title: 'New lead from email', body, footer });
 }
 
 // Public tracking page (anonymous, uses RPC)

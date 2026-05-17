@@ -534,6 +534,25 @@ export const emails = {
     if (error) throw error;
     return data;
   },
+  // Bulk insert with dedup by message_id. Returns rows actually inserted (skipping duplicates).
+  async upsertMany(rows) {
+    if (!rows || rows.length === 0) return [];
+    const ids = rows.map(r => r.message_id).filter(Boolean);
+    let existingIds = new Set();
+    if (ids.length) {
+      const { data, error } = await supabase
+        .from('emails')
+        .select('message_id')
+        .in('message_id', ids);
+      if (error) throw error;
+      existingIds = new Set((data || []).map(d => d.message_id));
+    }
+    const fresh = rows.filter(r => !r.message_id || !existingIds.has(r.message_id));
+    if (fresh.length === 0) return [];
+    const { data, error } = await supabase.from('emails').insert(fresh).select();
+    if (error) throw error;
+    return data || [];
+  },
   async update(id, patch) {
     const { error } = await supabase.from('emails').update(patch).eq('id', id);
     if (error) throw error;

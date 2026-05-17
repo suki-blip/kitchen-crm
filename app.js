@@ -4,6 +4,7 @@
 
 import * as db from './db.js';
 import { supabase } from './db.js';
+import * as gmail from './gmail.js';
 
 // ----- Constants -----
 
@@ -3110,10 +3111,18 @@ function renderThreadDetail(id) {
 function renderInboxPage() {
   const u = currentUser();
   const wrap = h('div');
-  wrap.appendChild(topbar('Inbox', [
-    h('button', { class: 'btn', onclick: () => openPasteEmail(refresh) }, [icon('plus'), 'Paste email']),
-    h('button', { class: 'btn btn-ghost', title: 'Gmail sync — coming in stage 2', onclick: () => toast('Gmail OAuth sync will be wired up in stage 2.') }, ['Sync Gmail (soon)']),
-  ], { subtitle: 'Triage incoming emails — convert each to a task, a new lead, or archive.' }));
+  const connected = gmail.isConnected();
+  const gmailBtn = connected
+    ? h('button', { class: 'btn btn-primary', title: 'Pull recent emails from Gmail', onclick: () => syncGmailNow(refresh) }, [icon('inbox'), 'Sync Gmail now'])
+    : h('button', { class: 'btn btn-primary', title: 'Connect your Gmail to pull emails into the inbox', onclick: () => connectGmail(refresh) }, [icon('inbox'), 'Connect Gmail']);
+  const actions = [
+    h('button', { class: 'btn btn-ghost', onclick: () => openPasteEmail(refresh) }, [icon('plus'), 'Paste email']),
+    gmailBtn,
+  ];
+  if (connected) {
+    actions.push(h('button', { class: 'btn btn-ghost', title: 'Disconnect Gmail', onclick: () => { gmail.disconnect(); render(); toast('Disconnected'); } }, ['Disconnect']));
+  }
+  wrap.appendChild(topbar('Inbox', actions, { subtitle: 'Triage incoming emails — convert each to a task, a new lead, or archive.' }));
 
   const filterSel = h('select', {}, [
     h('option', { value: 'new' }, ['New · needs triage']),
@@ -3189,6 +3198,39 @@ function renderEmailRow(e, refresh) {
 }
 
 // Paste-an-email helper (Stage 1 test mechanism; Stage 2 will replace with Gmail OAuth sync)
+// ----- Gmail integration: connect + sync -----
+
+async function connectGmail(onConnected) {
+  try {
+    await gmail.connect();
+    toast('Connected to Gmail');
+    render();
+    // Pull a first batch immediately so the user sees emails right away.
+    await syncGmailNow(onConnected, { silent: true });
+  } catch (e) {
+    toast('Gmail connect failed: ' + e.message);
+  }
+}
+
+async function syncGmailNow(onSaved, { silent = false } = {}) {
+  if (!silent) toast('Syncing Gmail…');
+  try {
+    const rows = await gmail.fetchRecent({ maxResults: 25 });
+    const inserted = await db.emails.upsertMany(rows);
+    if (inserted.length > 0) {
+      // Prepend the new ones so the user sees them immediately
+      state.store.emails = [...inserted, ...(state.store.emails || [])];
+    }
+    toast(inserted.length === 0
+      ? 'No new emails'
+      : inserted.length + ' new email' + (inserted.length > 1 ? 's' : '') + ' added to inbox');
+    onSaved?.();
+    render();
+  } catch (e) {
+    toast('Sync failed: ' + e.message);
+  }
+}
+
 function openPasteEmail(onSaved) {
   const fromName  = h('input', { type: 'text',  placeholder: 'Jane Smith' });
   const fromEmail = h('input', { type: 'email', placeholder: 'jane@example.com' });

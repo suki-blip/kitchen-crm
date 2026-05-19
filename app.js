@@ -2202,6 +2202,13 @@ function renderTasksPage() {
     h('option', { value: 'done' }, ['Completed']),
   ]);
 
+  // Filter by assignee — independent of the status filter. Default = "Anyone".
+  const assigneeSel = h('select', {}, [
+    h('option', { value: '' }, ['Anyone']),
+    h('option', { value: '__unassigned__' }, ['Unassigned']),
+    ...state.store.users.slice().sort((a, b) => a.name.localeCompare(b.name)).map(usr => h('option', { value: usr.id }, [usr.name + (usr.active ? '' : ' (disabled)')])),
+  ]);
+
   const sortSel = h('select', {}, [
     h('option', { value: 'date' }, ['Sort: Due date']),
     h('option', { value: 'priority' }, ['Sort: Priority']),
@@ -2214,9 +2221,18 @@ function renderTasksPage() {
   const refresh = () => {
     clear(listWrap);
     let list = state.store.tasks.slice();
-    if (filterSel.value === 'mine') list = list.filter(t => t.assignedTo === u.id && !t.completed);
-    else if (filterSel.value === 'open') list = list.filter(t => !t.completed);
-    else if (filterSel.value === 'done') list = list.filter(t => t.completed);
+    // Assignee filter wins on "who". When set, the status filter is reduced to
+    // its status component only (open vs done vs all).
+    const assignee = assigneeSel.value;
+    if (assignee === '__unassigned__')   list = list.filter(t => !t.assignedTo);
+    else if (assignee)                    list = list.filter(t => t.assignedTo === assignee);
+    else if (filterSel.value === 'mine')  list = list.filter(t => t.assignedTo === u.id && !t.completed);
+    // Apply status component (skipped above only when "mine" already handled it).
+    if (assignee || filterSel.value !== 'mine') {
+      if (filterSel.value === 'mine' || filterSel.value === 'open') list = list.filter(t => !t.completed);
+      else if (filterSel.value === 'done') list = list.filter(t => t.completed);
+      // filter === 'all' → no status filter
+    }
     list = sortTasks(list, sortSel.value);
 
     if (list.length === 0) {
@@ -2244,9 +2260,10 @@ function renderTasksPage() {
     }
   };
   filterSel.addEventListener('change', refresh);
+  assigneeSel.addEventListener('change', refresh);
   sortSel.addEventListener('change', refresh);
 
-  content.appendChild(h('div', { class: 'toolbar' }, [filterSel, sortSel]));
+  content.appendChild(h('div', { class: 'toolbar' }, [filterSel, assigneeSel, sortSel]));
   content.appendChild(h('div', { class: 'card' }, [listWrap]));
   refresh();
   wrap.appendChild(content);

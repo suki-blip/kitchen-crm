@@ -2,7 +2,7 @@
 // Strategy: stale-while-revalidate for the app shell (HTML/CSS/JS/icons),
 // network-only for Supabase API calls (so realtime data is always fresh).
 
-const VERSION = 'kcrm-v2-gmail-2026-05-11';
+const VERSION = 'kcrm-v3-assignee-filter-2026-05-20';
 const SHELL = [
   './',
   './index.html',

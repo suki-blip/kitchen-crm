@@ -86,6 +86,7 @@ export function taskFromRow(r) {
   return {
     id:          r.id,
     title:       r.title,
+    description: r.description || '',
     projectId:   r.project_id,
     assignedTo:  r.assigned_to,
     dueDate:     r.due_date,
@@ -100,6 +101,7 @@ export function taskFromRow(r) {
 export function taskToPatch(patch) {
   const out = {};
   if ('title'       in patch) out.title        = patch.title;
+  if ('description' in patch) out.description  = patch.description;
   if ('projectId'   in patch) out.project_id   = patch.projectId;
   if ('assignedTo'  in patch) out.assigned_to  = patch.assignedTo;
   if ('dueDate'     in patch) out.due_date     = patch.dueDate;

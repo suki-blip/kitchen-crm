@@ -2311,6 +2311,9 @@ function renderTaskRow(t, showProject = false) {
     }, [pri.label]) : null,
     t.title,
     showProject && c ? h('span', { class: 'faint-text' }, [' · ' + c.name + (p?.address ? ' · ' + p.address : '')]) : null,
+    t.description ? h('div', { class: 'task-desc-preview', title: t.description }, [
+      t.description.length > 140 ? t.description.slice(0, 140) + '…' : t.description,
+    ]) : null,
   ]);
   row.appendChild(titleEl);
 
@@ -2423,6 +2426,7 @@ function openQuickNote(t) {
 
 function openNewTask(onSaved) {
   const title = h('input', { type: 'text', placeholder: 'Task title' });
+  const description = h('textarea', { rows: 3, placeholder: 'Details (optional) — what needs to be done, links, dimensions, etc.' });
   const project = h('select', {}, [
     h('option', { value: '' }, ['(no project)']),
     ...state.store.projects.map(p => {
@@ -2438,6 +2442,7 @@ function openNewTask(onSaved) {
 
   const body = h('div', {}, [
     h('div', { class: 'field' }, [h('label', {}, ['Title']), title]),
+    h('div', { class: 'field' }, [h('label', {}, ['Description']), description]),
     h('div', { class: 'field-row' }, [
       h('div', { class: 'field' }, [h('label', {}, ['Priority']), priority]),
       h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
@@ -2452,6 +2457,7 @@ function openNewTask(onSaved) {
       try {
         await addTask({
           title: title.value.trim(),
+          description: description.value.trim() || null,
           projectId: project.value || null,
           assignedTo: assignee.value,
           dueDate: due.value || null,
@@ -2469,6 +2475,9 @@ function openNewTask(onSaved) {
 }
 
 function openEditTask(t, onSaved) {
+  const titleEl = h('input', { type: 'text', value: t.title || '' });
+  const descriptionEl = h('textarea', { rows: 3, placeholder: 'Details (optional) — what needs to be done, links, dimensions, etc.' });
+  descriptionEl.value = t.description || '';
   const due = h('input', { type: 'date', value: t.dueDate || '' });
   const priority = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
   priority.value = t.priority || 'normal';
@@ -2543,7 +2552,8 @@ function openEditTask(t, onSaved) {
   } }, ['Add note']);
 
   const body = h('div', {}, [
-    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, [t.title]),
+    h('div', { class: 'field' }, [h('label', {}, ['Title']), titleEl]),
+    h('div', { class: 'field' }, [h('label', {}, ['Description']), descriptionEl]),
     h('div', { class: 'field-row' }, [
       h('div', { class: 'field' }, [h('label', {}, ['Priority']), priority]),
       h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
@@ -2568,8 +2578,20 @@ function openEditTask(t, onSaved) {
     h('button', { class: 'btn btn-primary', onclick: () => {
       const oldDue = t.dueDate;
       const oldPri = t.priority || 'normal';
+      const oldTitle = t.title;
+      const oldDesc = t.description || '';
+      const newTitle = titleEl.value.trim() || t.title;
+      const newDesc = descriptionEl.value;
+      t.title = newTitle;
+      t.description = newDesc;
       t.dueDate = due.value || null;
       t.priority = priority.value || 'normal';
+      if (oldTitle !== t.title && t.projectId) {
+        logActivity(t.projectId, 'Task renamed: "' + oldTitle + '" → "' + t.title + '"');
+      }
+      if (oldDesc !== (t.description || '') && t.projectId) {
+        logActivity(t.projectId, 'Task description updated: ' + t.title);
+      }
       if (oldDue !== t.dueDate && t.projectId) {
         logActivity(t.projectId, 'Task rescheduled: ' + t.title + ' → ' + (t.dueDate || 'no date'));
       }

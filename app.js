@@ -3560,6 +3560,15 @@ function openMakeTaskFromEmail(e, matchedCustomer, onSaved) {
   const priority = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
   priority.value = 'high';
 
+  // Pre-fill task description with the email body so the user has the
+  // content right there — and can edit, trim, or replace it before saving.
+  const description = h('textarea', {
+    rows: 8,
+    style: 'width:100%; font-family:inherit; resize:vertical;',
+    placeholder: 'Task details (pre-filled from the email — edit freely)',
+  });
+  description.value = e.body_text || '';
+
   // Optional project link — only customer's existing projects, or none.
   const projectOptions = [h('option', { value: '' }, ['(no project)'])];
   if (matchedCustomer) {
@@ -3570,8 +3579,11 @@ function openMakeTaskFromEmail(e, matchedCustomer, onSaved) {
   const projectSel = h('select', {}, projectOptions);
 
   const body = h('div', {}, [
-    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, ['Creates a task. The email body becomes the first note on it.']),
+    h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, [
+      'Edit the task details below — the email body is pre-filled. Sender + subject are kept as a separate note for context.',
+    ]),
     h('div', { class: 'field' }, [h('label', {}, ['Task title']), title]),
+    h('div', { class: 'field' }, [h('label', {}, ['Description / details']), description]),
     h('div', { class: 'field-row' }, [
       h('div', { class: 'field' }, [h('label', {}, ['Assignee']), assignee]),
       h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
@@ -3588,18 +3600,21 @@ function openMakeTaskFromEmail(e, matchedCustomer, onSaved) {
       try {
         const task = await addTask({
           title: title.value.trim(),
+          description: description.value.trim() || null,
           projectId: projectSel.value || null,
           assignedTo: assignee.value,
           dueDate: due.value || null,
           priority: priority.value || 'normal',
           completed: false,
         });
-        // Attach the email body as the first note for context
-        const noteBody =
+        // Provenance note — sender + subject only, so the audit trail still
+        // links back to the original email even after the user edits the
+        // description above.
+        const provenance =
           'From: ' + (e.from_name ? e.from_name + ' <' + e.from_email + '>' : e.from_email) +
           '\nSubject: ' + (e.subject || '(no subject)') +
-          '\n\n' + (e.body_text || '');
-        try { await db.taskNotes.create(task.id, noteBody); } catch (err) { console.warn('note attach failed', err); }
+          '\nReceived: ' + fmtDateTime(e.received_at);
+        try { await db.taskNotes.create(task.id, provenance); } catch (err) { console.warn('note attach failed', err); }
         await db.emails.markConverted(e.id, 'task', { taskId: task.id });
         e.status = 'converted_task';
         e.converted_to_task_id = task.id;

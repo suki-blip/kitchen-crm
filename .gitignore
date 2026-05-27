@@ -4,3 +4,5 @@ node_modules/
 *.log
 .env
 .env.local
+.commit-split-backup/
+supabase/functions/*/index.b64

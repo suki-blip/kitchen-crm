@@ -3206,6 +3206,93 @@ function renderInboxPage() {
   const content = h('div', { class: 'content' });
   const listWrap = h('div');
 
+  // Multi-select state lives on the page closure. Clearing happens on filter
+  // change (so a selection in "New" doesn't bleed into "Archived").
+  const selected = new Set();
+  let visibleIds = []; // ids currently shown — used by "select all"
+
+  // Build the selection-aware toolbar above the list. Re-rendered by
+  // updateSelectionBar() whenever selection changes.
+  const selectAllBox = h('input', { type: 'checkbox', title: 'Select all visible' });
+  const selectionLabel = h('span', { class: 'faint-text', style: 'font-size:13px;' }, ['']);
+  const bulkActions = h('div', { style: 'display:flex; gap:6px;' });
+  const selectionBar = h('div', {
+    style: 'display:flex; align-items:center; gap:10px; padding:8px 12px; background:#f9fafb; border-bottom:1px solid #e5e7eb; border-radius:8px 8px 0 0;',
+  }, [selectAllBox, selectionLabel, h('div', { style: 'flex:1;' }), bulkActions]);
+
+  function updateSelectionBar() {
+    const f = filterSel.value;
+    const count = selected.size;
+    selectionLabel.textContent = count === 0
+      ? (visibleIds.length === 0 ? '' : `${visibleIds.length} email${visibleIds.length === 1 ? '' : 's'}`)
+      : `${count} selected`;
+    // Reflect select-all state
+    selectAllBox.checked  = visibleIds.length > 0 && visibleIds.every(id => selected.has(id));
+    selectAllBox.indeterminate = !selectAllBox.checked && count > 0;
+    selectAllBox.disabled = visibleIds.length === 0;
+
+    // Context-aware bulk actions per filter
+    clear(bulkActions);
+    if (count === 0) return;
+    const ids = Array.from(selected);
+
+    if (f === 'new') {
+      bulkActions.appendChild(h('button', {
+        class: 'btn btn-sm btn-ghost',
+        title: 'Archive all selected emails',
+        onclick: async () => {
+          try {
+            await db.emails.archiveMany(ids);
+            const now = new Date().toISOString();
+            ids.forEach(id => {
+              const e = (state.store.emails || []).find(x => x.id === id);
+              if (e) { e.status = 'archived'; e.triaged_at = now; }
+            });
+            selected.clear();
+            toast(`Marked ${ids.length} not relevant`);
+            refresh(); render();
+          } catch (err) { toast('Failed: ' + err.message); }
+        },
+      }, [`Mark ${count} not relevant`]));
+    } else if (f === 'archived') {
+      bulkActions.appendChild(h('button', {
+        class: 'btn btn-sm btn-ghost',
+        title: 'Move all selected back to New',
+        onclick: async () => {
+          try {
+            await db.emails.restoreMany(ids);
+            ids.forEach(id => {
+              const e = (state.store.emails || []).find(x => x.id === id);
+              if (e) { e.status = 'new'; e.triaged_at = null; }
+            });
+            selected.clear();
+            toast(`Restored ${ids.length}`);
+            refresh(); render();
+          } catch (err) { toast('Failed: ' + err.message); }
+        },
+      }, [`Restore ${count}`]));
+      bulkActions.appendChild(h('button', {
+        class: 'btn btn-sm',
+        style: 'background:#fee2e2; color:#991b1b; border-color:#fca5a5;',
+        title: 'Permanently delete selected — cannot be undone',
+        onclick: () => confirmDeleteEmails(ids, () => {
+          // Drop from store, clear selection, refresh
+          const dropSet = new Set(ids);
+          state.store.emails = (state.store.emails || []).filter(e => !dropSet.has(e.id));
+          selected.clear();
+          toast(`Deleted ${ids.length} permanently`);
+          refresh(); render();
+        }),
+      }, [`Delete ${count} permanently`]));
+    }
+  }
+
+  selectAllBox.addEventListener('change', () => {
+    if (selectAllBox.checked) visibleIds.forEach(id => selected.add(id));
+    else visibleIds.forEach(id => selected.delete(id));
+    refresh(); // re-render to reflect row checkbox state
+  });
+
   const refresh = () => {
     clear(listWrap);
     let list = (state.store.emails || []).slice();
@@ -3214,7 +3301,13 @@ function renderInboxPage() {
     else if (f === 'archived') list = list.filter(e => e.status === 'archived');
     else if (f === 'converted') list = list.filter(e => e.status && e.status.startsWith('converted'));
 
+    // Drop any selection ids that aren't visible anymore (e.g. filter changed).
+    visibleIds = list.map(e => e.id);
+    const visibleSet = new Set(visibleIds);
+    [...selected].forEach(id => { if (!visibleSet.has(id)) selected.delete(id); });
+
     if (list.length === 0) {
+      updateSelectionBar();
       listWrap.appendChild(emptyState({
         icon: 'inbox',
         title: f === 'new' ? 'Inbox is clear' : 'Nothing to show',
@@ -3226,24 +3319,67 @@ function renderInboxPage() {
     }
 
     list.sort((a, b) => (b.received_at || '').localeCompare(a.received_at || ''));
-    list.forEach(e => listWrap.appendChild(renderEmailRow(e, refresh)));
+    list.forEach(e => listWrap.appendChild(renderEmailRow(e, refresh, selected, updateSelectionBar)));
+    updateSelectionBar();
   };
-  filterSel.addEventListener('change', refresh);
+  filterSel.addEventListener('change', () => {
+    selected.clear();
+    refresh();
+  });
 
   content.appendChild(h('div', { class: 'toolbar' }, [filterSel]));
-  content.appendChild(h('div', { class: 'card' }, [listWrap]));
+  content.appendChild(h('div', { class: 'card' }, [selectionBar, listWrap]));
   refresh();
   wrap.appendChild(content);
   return wrap;
 }
 
-function renderEmailRow(e, refresh) {
+// Modal confirmation for permanent delete. Uses the existing modal() helper.
+function confirmDeleteEmails(ids, onConfirmed) {
+  const body = h('div', {}, [
+    h('p', {}, [`You're about to permanently delete ${ids.length} email${ids.length === 1 ? '' : 's'}.`]),
+    h('p', { class: 'muted-text' }, ['This removes the rows from the database — they cannot be restored. Archived emails can be restored later, so prefer that unless you\'re sure.']),
+  ]);
+  const footer = h('div', {}, [
+    h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
+    h('button', {
+      class: 'btn btn-primary',
+      style: 'background:#dc2626; border-color:#dc2626;',
+      onclick: async () => {
+        try {
+          await db.emails.removeMany(ids);
+          closeModal();
+          onConfirmed?.();
+        } catch (err) { toast('Failed: ' + err.message); }
+      },
+    }, [`Yes, delete ${ids.length} permanently`]),
+  ]);
+  modal({ title: 'Delete emails permanently?', body, footer });
+}
+
+function renderEmailRow(e, refresh, selected, onSelectChange) {
   const statusTag = e.status === 'new'      ? { label: 'New',      cls: 'gold' }
                   : e.status === 'archived' ? { label: 'Archived', cls: 'dim' }
                   : e.status && e.status.startsWith('converted') ? { label: 'Converted', cls: 'ok' }
                   : { label: e.status || '—', cls: '' };
 
   const row = h('div', { class: 'task-row' + (e.status !== 'new' ? ' done' : '') });
+
+  // Per-row selection checkbox (only if a selection set was passed in)
+  if (selected) {
+    const cb = h('input', {
+      type: 'checkbox',
+      style: 'margin-right:10px; cursor:pointer;',
+      onclick: (ev) => ev.stopPropagation(),
+      onchange: () => {
+        if (cb.checked) selected.add(e.id);
+        else selected.delete(e.id);
+        onSelectChange?.();
+      },
+    });
+    cb.checked = selected.has(e.id);
+    row.appendChild(cb);
+  }
 
   // Sender + subject + snippet
   row.appendChild(h('div', { class: 'ttitle' }, [
@@ -3262,7 +3398,41 @@ function renderEmailRow(e, refresh) {
   ]));
 
   if (e.status === 'new') {
+    // One-click dismiss — archive without opening the triage modal.
+    // Stops the row click from also opening the modal (event.stopPropagation
+    // isn't needed because the button itself is the click target).
+    row.appendChild(h('button', {
+      class: 'btn btn-sm btn-ghost',
+      title: 'Mark as not relevant — moves to Archived',
+      onclick: async () => {
+        try {
+          await db.emails.archive(e.id);
+          e.status = 'archived';
+          e.triaged_at = new Date().toISOString();
+          toast('Marked not relevant');
+          refresh?.();
+          render();
+        } catch (err) { toast('Failed: ' + err.message); }
+      },
+    }, ['Not relevant']));
     row.appendChild(h('button', { class: 'btn btn-sm btn-primary', onclick: () => openTriageEmail(e, refresh) }, ['Triage']));
+  } else if (e.status === 'archived') {
+    // Reversal for the archived view
+    row.appendChild(h('button', {
+      class: 'btn btn-sm btn-ghost',
+      title: 'Move back to "New · needs triage"',
+      onclick: async () => {
+        try {
+          await db.emails.restore(e.id);
+          e.status = 'new';
+          e.triaged_at = null;
+          toast('Restored');
+          refresh?.();
+          render();
+        } catch (err) { toast('Failed: ' + err.message); }
+      },
+    }, ['Restore']));
+    row.appendChild(h('button', { class: 'btn btn-sm btn-ghost', onclick: () => openTriageEmail(e, refresh) }, ['View']));
   } else {
     row.appendChild(h('button', { class: 'btn btn-sm btn-ghost', onclick: () => openTriageEmail(e, refresh) }, ['View']));
   }

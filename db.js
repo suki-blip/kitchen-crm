@@ -573,6 +573,10 @@ export const emails = {
   async archive(id) {
     return this.update(id, { status: 'archived', triaged_at: new Date().toISOString() });
   },
+  // Reverse archive — put the email back in the "New · needs triage" view.
+  async restore(id) {
+    return this.update(id, { status: 'new', triaged_at: null });
+  },
   async markConverted(id, kind, { taskId, projectId, customerId }) {
     const status = kind === 'task' ? 'converted_task' : kind === 'lead' ? 'converted_lead' : 'converted_both';
     const patch = { status, triaged_at: new Date().toISOString() };
@@ -583,6 +587,30 @@ export const emails = {
   },
   async remove(id) {
     const { error } = await supabase.from('emails').delete().eq('id', id);
+    if (error) throw error;
+  },
+
+  // Bulk variants — used by the inbox multi-select toolbar. One round-trip
+  // each; safer + faster than calling the single-row helpers in a loop.
+  async archiveMany(ids) {
+    if (!ids?.length) return;
+    const { error } = await supabase
+      .from('emails')
+      .update({ status: 'archived', triaged_at: new Date().toISOString() })
+      .in('id', ids);
+    if (error) throw error;
+  },
+  async restoreMany(ids) {
+    if (!ids?.length) return;
+    const { error } = await supabase
+      .from('emails')
+      .update({ status: 'new', triaged_at: null })
+      .in('id', ids);
+    if (error) throw error;
+  },
+  async removeMany(ids) {
+    if (!ids?.length) return;
+    const { error } = await supabase.from('emails').delete().in('id', ids);
     if (error) throw error;
   },
 };

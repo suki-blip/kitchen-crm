@@ -2617,17 +2617,34 @@ function renderUsersPage() {
     h('th', {}, ['Name']),
     h('th', {}, ['Role']),
     h('th', {}, ['Status']),
+    h('th', {}, ['Email alerts']),
     h('th', { class: 'col-actions' }, ['']),
   ])]));
   const tb = h('tbody');
   state.store.users.forEach(u => {
+    const isMe = u.id === state.session.userId;
+    const notifyTag = h('span', {
+      class: 'tag ' + (u.notifyEmail ? 'ok' : 'dim'),
+      style: 'cursor:pointer',
+      title: isMe ? 'Click to toggle your own email alerts' : 'Click to toggle this user\'s email alerts',
+      onclick: async () => {
+        try {
+          const next = !u.notifyEmail;
+          await db.profiles.update(u.id, { notifyEmail: next });
+          u.notifyEmail = next;
+          render();
+        } catch (e) { toast('Failed: ' + e.message); }
+      },
+    }, [u.notifyEmail ? 'On' : 'Off']);
+
     tb.appendChild(h('tr', {}, [
       h('td', {}, [u.name]),
       h('td', {}, [ROLES[u.role].label]),
       h('td', {}, [h('span', { class: 'tag ' + (u.active ? 'ok' : 'dim') }, [u.active ? 'Active' : 'Disabled'])]),
+      h('td', {}, [notifyTag]),
       h('td', { class: 'col-actions' }, [
         h('button', { class: 'btn btn-sm', onclick: () => openUserModal(u) }, ['Edit']),
-        u.id !== state.session.userId
+        !isMe
           ? h('button', { class: 'btn btn-sm', onclick: async () => {
               try {
                 const next = !u.active;
@@ -2678,19 +2695,35 @@ function openUserModal(existing) {
   const name = h('input', { type: 'text', value: existing?.name || '' });
   const role = h('select', {}, Object.entries(ROLES).map(([id, r]) => h('option', { value: id }, [r.label])));
   role.value = existing.role;
+  const notify = h('input', { type: 'checkbox' });
+  notify.checked = existing.notifyEmail !== false;
 
   const body = h('div', {}, [
     h('div', { class: 'field' }, [h('label', {}, ['Name']), name]),
     h('div', { class: 'field' }, [h('label', {}, ['Role']), role]),
+    h('div', { class: 'field' }, [
+      h('label', { style: 'display:flex;align-items:center;gap:8px;cursor:pointer;' }, [
+        notify,
+        h('span', {}, ['Receive email alerts (new tasks, due today, overdue)']),
+      ]),
+      h('div', { class: 'muted-text', style: 'font-size:12px;margin-top:4px;' }, [
+        'Emails go to the address you signed up with.',
+      ]),
+    ]),
   ]);
   const footer = h('div', {}, [
     h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
     h('button', { class: 'btn btn-primary', onclick: async () => {
       if (!name.value.trim()) { toast('Name required'); return; }
       try {
-        await db.profiles.update(existing.id, { name: name.value.trim(), role: role.value });
+        await db.profiles.update(existing.id, {
+          name: name.value.trim(),
+          role: role.value,
+          notifyEmail: notify.checked,
+        });
         existing.name = name.value.trim();
         existing.role = role.value;
+        existing.notifyEmail = notify.checked;
         closeModal();
         render();
       } catch (e) { toast('Failed: ' + e.message); }

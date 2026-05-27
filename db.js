@@ -141,8 +141,19 @@ export function profileFromRow(r) {
     name: r.name,
     role: r.role,
     active: !!r.active,
+    notifyEmail: r.notify_email == null ? true : !!r.notify_email,
     createdAt: r.created_at,
   };
+}
+
+// Use this when calling db.profiles.update — maps camelCase patch keys to snake_case columns.
+export function profileToPatch(patch) {
+  const out = {};
+  if ('name'         in patch) out.name         = patch.name;
+  if ('role'         in patch) out.role         = patch.role;
+  if ('active'       in patch) out.active       = patch.active;
+  if ('notifyEmail'  in patch) out.notify_email = !!patch.notifyEmail;
+  return out;
 }
 
 // ----- Auth -----
@@ -191,7 +202,7 @@ export const profiles = {
     return profileFromRow(data);
   },
   async update(id, patch) {
-    const { error } = await supabase.from('profiles').update(patch).eq('id', id);
+    const { error } = await supabase.from('profiles').update(profileToPatch(patch)).eq('id', id);
     if (error) throw error;
   },
 };

@@ -3203,6 +3203,13 @@ function renderInboxPage() {
     h('option', { value: 'converted' }, ['Converted']),
   ]);
 
+  // Free-text search across sender, subject, snippet and body.
+  const searchInput = h('input', {
+    type: 'search',
+    placeholder: 'Search sender, subject or body…',
+    style: 'flex:1; min-width:180px;',
+  });
+
   const content = h('div', { class: 'content' });
   const listWrap = h('div');
 
@@ -3301,6 +3308,14 @@ function renderInboxPage() {
     else if (f === 'archived') list = list.filter(e => e.status === 'archived');
     else if (f === 'converted') list = list.filter(e => e.status && e.status.startsWith('converted'));
 
+    // Free-text search — matches any of sender name/email, subject, snippet, body.
+    const q = searchInput.value.trim().toLowerCase();
+    if (q) {
+      list = list.filter(e => [
+        e.from_name, e.from_email, e.subject, e.snippet, e.body_text,
+      ].some(v => (v || '').toLowerCase().includes(q)));
+    }
+
     // Drop any selection ids that aren't visible anymore (e.g. filter changed).
     visibleIds = list.map(e => e.id);
     const visibleSet = new Set(visibleIds);
@@ -3310,10 +3325,12 @@ function renderInboxPage() {
       updateSelectionBar();
       listWrap.appendChild(emptyState({
         icon: 'inbox',
-        title: f === 'new' ? 'Inbox is clear' : 'Nothing to show',
-        text: f === 'new'
-          ? 'No new emails awaiting triage. Click "Paste email" to test the flow with a sample.'
-          : 'Try changing the filter.',
+        title: q ? 'No matches' : (f === 'new' ? 'Inbox is clear' : 'Nothing to show'),
+        text: q
+          ? `No emails match "${searchInput.value.trim()}". Try a different term or clear the search.`
+          : (f === 'new'
+            ? 'No new emails awaiting triage. Click "Paste email" to test the flow with a sample.'
+            : 'Try changing the filter.'),
       }));
       return;
     }
@@ -3327,7 +3344,14 @@ function renderInboxPage() {
     refresh();
   });
 
-  content.appendChild(h('div', { class: 'toolbar' }, [filterSel]));
+  // Debounce keystrokes so we don't re-render on every character.
+  let searchTimer = null;
+  searchInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { selected.clear(); refresh(); }, 150);
+  });
+
+  content.appendChild(h('div', { class: 'toolbar', style: 'display:flex; gap:10px; align-items:center;' }, [filterSel, searchInput]));
   content.appendChild(h('div', { class: 'card' }, [selectionBar, listWrap]));
   refresh();
   wrap.appendChild(content);

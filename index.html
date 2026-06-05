@@ -35,9 +35,22 @@
   <script type="module" src="app.js"></script>
   <script>
     // Register the service worker (production only — skip on localhost for easier dev).
+    // updateViaCache:'none' makes the browser bypass HTTP cache when polling
+    // for a new sw.js — GitHub Pages otherwise sets Expires ~10h ahead which
+    // would delay every UI update by hours. With this set, hitting the site
+    // after a deploy fetches sw.js fresh, the new SW installs + claims, and
+    // the next reload serves the new shell.
     if ('serviceWorker' in navigator && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
       window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW registration failed', err));
+        navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' })
+          .then(reg => {
+            // Also check for updates whenever the page becomes visible — this
+            // catches the case where the user keeps the tab open for hours.
+            document.addEventListener('visibilitychange', () => {
+              if (document.visibilityState === 'visible') reg.update().catch(() => {});
+            });
+          })
+          .catch(err => console.warn('SW registration failed', err));
       });
     }
   </script>

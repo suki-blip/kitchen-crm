@@ -3224,7 +3224,7 @@ function renderInboxPage() {
   const selectionLabel = h('span', { class: 'faint-text', style: 'font-size:13px;' }, ['']);
   const bulkActions = h('div', { style: 'display:flex; gap:6px;' });
   const selectionBar = h('div', {
-    style: 'display:flex; align-items:center; gap:10px; padding:8px 12px; background:#f9fafb; border-bottom:1px solid #e5e7eb; border-radius:8px 8px 0 0;',
+    style: 'display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--bg); border-bottom:1px solid var(--line-soft); border-radius:12px 12px 0 0;',
   }, [selectAllBox, selectionLabel, h('div', { style: 'flex:1;' }), bulkActions]);
 
   function updateSelectionBar() {
@@ -3280,7 +3280,7 @@ function renderInboxPage() {
       }, [`Restore ${count}`]));
       bulkActions.appendChild(h('button', {
         class: 'btn btn-sm',
-        style: 'background:#fee2e2; color:#991b1b; border-color:#fca5a5;',
+        style: 'background:var(--danger-tint); color:var(--danger); border-color:transparent;',
         title: 'Permanently delete selected — cannot be undone',
         onclick: () => confirmDeleteEmails(ids, () => {
           // Drop from store, clear selection, refresh
@@ -3368,7 +3368,7 @@ function confirmDeleteEmails(ids, onConfirmed) {
     h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
     h('button', {
       class: 'btn btn-primary',
-      style: 'background:#dc2626; border-color:#dc2626;',
+      style: 'background:var(--danger); border-color:var(--danger);',
       onclick: async () => {
         try {
           await db.emails.removeMany(ids);

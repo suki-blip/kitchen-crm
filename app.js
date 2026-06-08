@@ -2481,6 +2481,14 @@ function openEditTask(t, onSaved) {
   const due = h('input', { type: 'date', value: t.dueDate || '' });
   const priority = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
   priority.value = t.priority || 'normal';
+  // Reassign — building the same options list the new-task modal uses, with
+  // "Unassigned" at the top so you can also clear an existing assignment.
+  const assigneeEl = h('select', {}, [
+    h('option', { value: '' }, ['Unassigned']),
+    ...state.store.users.filter(u => u.active).map(u =>
+      h('option', { value: u.id }, [u.name + ' · ' + ROLES[u.role].label])),
+  ]);
+  assigneeEl.value = t.assignedTo || '';
 
   const setDays = (n) => {
     const base = t.dueDate ? new Date(t.dueDate + 'T00:00:00') : new Date();
@@ -2555,10 +2563,13 @@ function openEditTask(t, onSaved) {
     h('div', { class: 'field' }, [h('label', {}, ['Title']), titleEl]),
     h('div', { class: 'field' }, [h('label', {}, ['Description']), descriptionEl]),
     h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Assignee']), assigneeEl]),
       h('div', { class: 'field' }, [h('label', {}, ['Priority']), priority]),
-      h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
     ]),
-    h('div', { class: 'field' }, [h('label', {}, ['Postpone']), presets]),
+    h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
+      h('div', { class: 'field' }, [h('label', {}, ['Postpone']), presets]),
+    ]),
     h('hr'),
     h('label', {}, ['Notes & updates']),
     notesWrap,
@@ -2576,16 +2587,24 @@ function openEditTask(t, onSaved) {
       saveStore(); closeModal(); onSaved?.(); render();
     } }, ['Clear date']),
     h('button', { class: 'btn btn-primary', onclick: () => {
-      const oldDue = t.dueDate;
-      const oldPri = t.priority || 'normal';
+      const oldDue   = t.dueDate;
+      const oldPri   = t.priority || 'normal';
       const oldTitle = t.title;
-      const oldDesc = t.description || '';
+      const oldDesc  = t.description || '';
+      const oldAss   = t.assignedTo || null;
+      const newAss   = assigneeEl.value || null;
       const newTitle = titleEl.value.trim() || t.title;
-      const newDesc = descriptionEl.value;
-      t.title = newTitle;
+      const newDesc  = descriptionEl.value;
+      t.title       = newTitle;
       t.description = newDesc;
-      t.dueDate = due.value || null;
-      t.priority = priority.value || 'normal';
+      t.dueDate     = due.value || null;
+      t.priority    = priority.value || 'normal';
+      // Setting assignedTo flows through the dirty-tracking proxy, so saveStore
+      // pushes UPDATE tasks SET assigned_to=... — which fires the Postgres
+      // trigger trg_task_assigned and sends a "Task assigned" email to the
+      // new recipient (provided they have notify_email = true).
+      t.assignedTo  = newAss;
+
       if (oldTitle !== t.title && t.projectId) {
         logActivity(t.projectId, 'Task renamed: "' + oldTitle + '" → "' + t.title + '"');
       }
@@ -2597,6 +2616,16 @@ function openEditTask(t, onSaved) {
       }
       if (oldPri !== t.priority && t.projectId) {
         logActivity(t.projectId, 'Task priority changed: ' + oldPri + ' → ' + t.priority);
+      }
+      if (oldAss !== newAss) {
+        const oldName = oldAss ? (state.store.users.find(u => u.id === oldAss)?.name || 'someone') : 'Unassigned';
+        const newName = newAss ? (state.store.users.find(u => u.id === newAss)?.name || 'someone') : 'Unassigned';
+        if (t.projectId) {
+          logActivity(t.projectId, 'Task reassigned: ' + t.title + ' · ' + oldName + ' → ' + newName);
+        }
+        if (newAss && newAss !== state.session?.userId) {
+          toast('Reassigned to ' + newName + ' — they\'ll get an email');
+        }
       }
       saveStore(); closeModal(); onSaved?.(); render();
     } }, ['Save']),

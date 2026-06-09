@@ -2240,24 +2240,27 @@ function renderTasksPage() {
     h('button', { class: 'btn btn-primary', onclick: () => openNewTask(refresh) }, [icon('plus'), 'New task']),
   ]));
 
-  // "Active now" is the new default — only tasks that are already actionable
-  // (start_date <= today OR null) and not yet completed. This stops the page
-  // from drowning users in tasks that aren't due yet.
+  // Status filter. "Active now" (start_date <= today, not done) is the
+  // default — drops anything that hasn't started yet from view. User can
+  // explicitly pick "Upcoming" to see the not-yet-started pipeline.
   const filterSel = h('select', {}, [
-    h('option', { value: 'active' }, ['Active now']),
-    h('option', { value: 'mine' }, ['My tasks']),
-    h('option', { value: 'all' }, ['All tasks']),
-    h('option', { value: 'open' }, ['All open']),
+    h('option', { value: 'active' },   ['Active now']),
     h('option', { value: 'upcoming' }, ['Upcoming (not started)']),
-    h('option', { value: 'done' }, ['Completed']),
+    h('option', { value: 'open' },     ['All open (active + upcoming)']),
+    h('option', { value: 'done' },     ['Completed']),
+    h('option', { value: 'all' },      ['All tasks']),
   ]);
 
-  // Filter by assignee — independent of the status filter. Default = "Anyone".
+  // Assignee filter. Defaults to "Me" — so out of the box the page is "my
+  // active tasks". Pick "Anyone" to see everyone's tasks under the current
+  // status filter.
   const assigneeSel = h('select', {}, [
-    h('option', { value: '' }, ['Anyone']),
-    h('option', { value: '__unassigned__' }, ['Unassigned']),
+    h('option', { value: '__me__' },          ['My tasks']),
+    h('option', { value: '' },                ['Anyone']),
+    h('option', { value: '__unassigned__' },  ['Unassigned']),
     ...state.store.users.slice().sort((a, b) => a.name.localeCompare(b.name)).map(usr => h('option', { value: usr.id }, [usr.name + (usr.active ? '' : ' (disabled)')])),
   ]);
+  assigneeSel.value = '__me__';
 
   // "Manual" mode is the new default — respects whatever order the user has
   // dragged rows into via sort_order. Other modes (date / priority / project)
@@ -2280,34 +2283,38 @@ function renderTasksPage() {
 
     // ---------- Assignee filter ----------
     const assignee = assigneeSel.value;
-    if (assignee === '__unassigned__')   list = list.filter(t => !t.assignedTo);
-    else if (assignee)                    list = list.filter(t => t.assignedTo === assignee);
-    else if (filterSel.value === 'mine')  list = list.filter(t => t.assignedTo === u.id && !t.completed);
+    if      (assignee === '__me__')         list = list.filter(t => t.assignedTo === u.id);
+    else if (assignee === '__unassigned__') list = list.filter(t => !t.assignedTo);
+    else if (assignee)                       list = list.filter(t => t.assignedTo === assignee);
+    // else '' → Anyone, no assignee filter
 
     // ---------- Status filter ----------
-    if (assignee || filterSel.value !== 'mine') {
-      if (filterSel.value === 'active') {
-        // Already actionable: not done AND (no start date OR start <= today)
-        list = list.filter(t => !t.completed && (!t.startDate || t.startDate <= today));
-      } else if (filterSel.value === 'upcoming') {
-        // Not yet started: not done AND startDate > today
-        list = list.filter(t => !t.completed && t.startDate && t.startDate > today);
-      } else if (filterSel.value === 'mine' || filterSel.value === 'open') {
-        list = list.filter(t => !t.completed);
-      } else if (filterSel.value === 'done') {
-        list = list.filter(t => t.completed);
-      }
-      // filter === 'all' → no status filter
+    if (filterSel.value === 'active') {
+      // Already actionable: not done AND (no start date OR start <= today)
+      list = list.filter(t => !t.completed && (!t.startDate || t.startDate <= today));
+    } else if (filterSel.value === 'upcoming') {
+      // Not yet started: not done AND startDate > today
+      list = list.filter(t => !t.completed && t.startDate && t.startDate > today);
+    } else if (filterSel.value === 'open') {
+      // Active + upcoming together
+      list = list.filter(t => !t.completed);
+    } else if (filterSel.value === 'done') {
+      list = list.filter(t => t.completed);
     }
+    // filter === 'all' → no status filter
 
     list = sortTasks(list, sortSel.value);
 
     if (list.length === 0) {
+      const isMine = assigneeSel.value === '__me__';
+      const isActive = filterSel.value === 'active';
       listWrap.appendChild(emptyState({
         icon: 'tasks',
-        title: filterSel.value === 'active' ? 'Nothing on your plate' : 'No tasks match this filter',
-        text:  filterSel.value === 'active'
-          ? 'Everything that\'s due is either done or hasn\'t started yet. Switch to "Upcoming" to see future tasks.'
+        title: isMine && isActive ? 'Nothing on your plate'
+             : isActive            ? 'No active tasks'
+             : 'No tasks match this filter',
+        text:  isMine && isActive
+          ? 'You have no active tasks right now. Switch to "Upcoming" to see what\'s coming, or pick "Anyone" to see the team\'s workload.'
           : 'Try a different filter or create a new task.',
       }));
       return;

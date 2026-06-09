@@ -134,23 +134,25 @@ function trackedArray(table, arr) {
 }
 
 async function loadAll() {
-  const [profiles, customers, projects, tasks, threads, emails] = await Promise.all([
+  const [profiles, customers, projects, tasks, threads, emails, taskTemplates] = await Promise.all([
     db.profiles.list(),
     db.customers.list(),
     db.projects.list(),
     db.tasks.list(),
     db.threads.listMine(),
     db.emails.list().catch(e => { console.warn('emails load skipped', e); return []; }),
+    db.taskTemplates.list().catch(e => { console.warn('task templates load skipped', e); return []; }),
   ]);
   _dirty.customers.clear(); _dirty.projects.clear(); _dirty.tasks.clear();
   state.store = {
-    schemaVersion: 5,
+    schemaVersion: 6,
     users: profiles,
     customers: trackedArray('customers', customers.map(c => trackedEntity('customers', c))),
     projects: trackedArray('projects', projects.map(p => trackedEntity('projects', p))),
     tasks: trackedArray('tasks', tasks.map(t => trackedEntity('tasks', t))),
     threads,
     emails,
+    taskTemplates,         // wizard presets, editable from Settings
     activity: [],          // loaded per-project on demand
     filesByProject: {},    // loaded per-project on demand
     activityByProject: {}, // loaded per-project on demand
@@ -374,9 +376,15 @@ function logActivity(projectId, message) {
 
 function customerOf(project) { return state.store.customers.find(c => c.id === project.customerId); }
 function projectsOfCustomer(cid) { return state.store.projects.filter(p => p.customerId === cid); }
+// Project's primary identifier is the site address. Customer name is the
+// secondary, smaller label — useful when two jobs share an address.
 function projectLabel(p) {
   const c = customerOf(p);
-  return (c?.name || 'Customer') + ' · ' + (p.address || 'no address');
+  if (p.address) return p.address + (c?.name ? ' · ' + c.name : '');
+  return c?.name || 'Untitled project';
+}
+function projectAddressOrFallback(p) {
+  return p?.address || customerOf(p)?.name || 'Untitled project';
 }
 
 function setStage(p, stageId, opts = {}) {
@@ -1358,7 +1366,7 @@ function openNewProject() {
     h('option', { value: '' }, ['Select a lead…']),
     ...openLeads.slice().sort((a,b) => (b.createdAt||'').localeCompare(a.createdAt||'')).map(p => {
       const c = customerOf(p);
-      const label = (c?.name || 'Customer') + ' · ' + (p.address || '—') + ' · ' + stageDef(p.stage).label;
+      const label = (p.address || c?.name || '—') + ' · ' + stageDef(p.stage).label + (c?.name && p.address ? ' · ' + c.name : '');
       return h('option', { value: p.id }, [label]);
     }),
   ]);
@@ -1386,14 +1394,16 @@ function openNewProject() {
   ]));
 
   // ----- Project fields (visible only in customer modes) -----
+  // Note: no project-level "Assigned to" anymore — assignment happens per
+  // task in the wizard step that opens right after this modal.
   const pAddr = h('input', { type: 'text', placeholder: 'Project site address' });
-  const pAssignee = h('select', {}, state.store.users.filter(u => u.active).map(u => h('option', { value: u.id }, [u.name + ' · ' + ROLES[u.role].label])));
-  pAssignee.value = state.session.userId;
 
   const projSection = h('div', { style: 'display:none; border-top:1px solid var(--line-soft); padding-top:14px; margin-top:6px;' }, [
     h('div', { class: 'section-title' }, ['Project']),
     h('div', { class: 'field' }, [h('label', {}, ['Project site address']), pAddr]),
-    h('div', { class: 'field' }, [h('label', {}, ['Assigned to']), pAssignee]),
+    h('div', { class: 'muted-text', style: 'font-size:12px;' }, [
+      'You\'ll assign each task to a team member in the next step.',
+    ]),
   ]);
 
   const body = h('div', {}, [tabs, leadSection, exSection, newSection, projSection]);
@@ -1448,7 +1458,8 @@ function openNewProject() {
         const p = await createProject({
           customerId,
           address: pAddr.value.trim(),
-          assignedTo: pAssignee.value,
+          // No project-level assignee — set in the per-task wizard next.
+          assignedTo: null,
           stage: 'dealClosed', // skip lead phase — this is an active project from the start
         });
         closeModal();
@@ -1464,16 +1475,34 @@ function openNewProject() {
 
 function openProjectTaskWizard(project, onDone) {
   const c = customerOf(project);
-  const suffix = c ? ' — ' + c.name : '';
+  const projectAddr = project.address || '';
+  // The project label that gets stamped onto every generated task's
+  // description — so workers see the address (the primary identifier) right
+  // away when they open the task.
+  const addrLine = projectAddr ? '📍 ' + projectAddr : '';
+  const custLine = c?.name ? '👤 ' + c.name : '';
+  const provenance = [addrLine, custLine].filter(Boolean).join('\n');
 
-  // Suggested follow-up tasks for kitchen projects.
-  const TEMPLATES = [
-    { title: 'Take measurements at site' + suffix,    days: 3,  checked: true,  priority: 'high'   },
-    { title: 'Submit drawings for approval' + suffix, days: 7,  checked: true,  priority: 'normal' },
-    { title: 'Submit production order' + suffix,      days: 14, checked: false, priority: 'normal' },
-    { title: 'Schedule delivery' + suffix,            days: 30, checked: false, priority: 'normal' },
-    { title: 'Schedule installation' + suffix,        days: 35, checked: false, priority: 'normal' },
+  // Pull templates loaded from DB. Fall back to a hard-coded set if the
+  // taskTemplates table couldn't be loaded (e.g. first deploy before
+  // migration 007 has finished propagating).
+  const templates = (state.store.taskTemplates || []).filter(t => t.active);
+  const fallback = [
+    { title: 'Take measurements at site',     daysOffset: 3,  defaultPriority: 'high'   },
+    { title: 'Submit drawings for approval',  daysOffset: 7,  defaultPriority: 'normal' },
+    { title: 'Submit production order',       daysOffset: 14, defaultPriority: 'normal' },
+    { title: 'Schedule delivery',             daysOffset: 30, defaultPriority: 'normal' },
+    { title: 'Schedule installation',         daysOffset: 35, defaultPriority: 'normal' },
   ];
+  const TEMPLATES = (templates.length ? templates : fallback).map((t, idx) => ({
+    title:    t.title,
+    days:     t.daysOffset,
+    priority: t.defaultPriority,
+    checked:  idx < 2, // first two checked by default; user can toggle
+  }));
+
+  const activeUsers = state.store.users.filter(u => u.active);
+  const myId = state.session.userId;
 
   const rows = [];
   const rowsWrap = h('div', { class: 'wizard-rows' });
@@ -1485,6 +1514,13 @@ function openProjectTaskWizard(project, onDone) {
     const daysEl = h('input', { type: 'number', value: String(t.days), min: '0', max: '365', style: 'width:70px;' });
     const prioEl = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
     prioEl.value = t.priority || 'normal';
+    // Per-task assignee — defaults to "me" so a solo user can blast through
+    // the wizard without touching each row.
+    const assigneeEl = h('select', { style: 'min-width:140px;' }, [
+      h('option', { value: '' }, ['Unassigned']),
+      ...activeUsers.map(u => h('option', { value: u.id }, [u.name])),
+    ]);
+    assigneeEl.value = t.assignee || myId;
     const removeBtn = h('button', { class: 'btn-mini', title: 'Remove', onclick: () => {
       const i = rows.indexOf(rowItem); if (i >= 0) { rows.splice(i, 1); row.remove(); }
     } }, [icon('trash')]);
@@ -1495,9 +1531,10 @@ function openProjectTaskWizard(project, onDone) {
       daysEl,
       h('span', { class: 'muted-text' }, ['days']),
       prioEl,
+      assigneeEl,
       removeBtn,
     ]);
-    const rowItem = { cb, titleEl, daysEl, prioEl };
+    const rowItem = { cb, titleEl, daysEl, prioEl, assigneeEl };
     rows.push(rowItem);
     rowsWrap.appendChild(row);
   }
@@ -1508,7 +1545,8 @@ function openProjectTaskWizard(project, onDone) {
 
   const body = h('div', {}, [
     h('div', { class: 'muted-text', style: 'margin-bottom:10px;' }, [
-      'Project created. Pick which follow-up tasks to add. Uncheck any you don\'t want, edit titles and dates, or add your own.',
+      'Project created at ', h('strong', {}, [projectAddr || '(no address)']),
+      '. Pick which follow-up tasks to add. Each task will be tagged with the project address so it\'s easy to find on site.',
     ]),
     h('div', { class: 'wizard-head' }, [
       h('span', {}, ['']),
@@ -1517,6 +1555,7 @@ function openProjectTaskWizard(project, onDone) {
       h('span', {}, ['Due']),
       h('span', {}, ['']),
       h('span', {}, ['Priority']),
+      h('span', {}, ['Assignee']),
       h('span', {}, ['']),
     ]),
     rowsWrap,
@@ -1528,18 +1567,24 @@ function openProjectTaskWizard(project, onDone) {
     h('button', { class: 'btn btn-primary', onclick: async () => {
       const picked = rows
         .map(r => ({
-          checked: r.cb.checked,
-          title: r.titleEl.value.trim(),
-          days: parseInt(r.daysEl.value, 10) || 0,
-          priority: r.prioEl.value || 'normal',
+          checked:    r.cb.checked,
+          title:      r.titleEl.value.trim(),
+          days:       parseInt(r.daysEl.value, 10) || 0,
+          priority:   r.prioEl.value || 'normal',
+          assignedTo: r.assigneeEl.value || null,
         }))
         .filter(it => it.checked && it.title);
       try {
         for (const it of picked) {
+          // Stamp the project address into the description so workers see
+          // it the moment they open the task — and also pick it up in the
+          // assignment email (which includes the description).
+          const description = provenance;
           await addTask({
             title: it.title,
+            description,
             projectId: project.id,
-            assignedTo: project.assignedTo || state.session.userId,
+            assignedTo: it.assignedTo,
             dueDate: addDays(new Date(), it.days).toISOString().slice(0, 10),
             priority: it.priority,
             completed: false,
@@ -1578,9 +1623,9 @@ function renderProjectDetail(id, tab) {
 
   const head = h('div', { class: 'detail-head' });
   head.appendChild(h('div', {}, [
-    h('h1', {}, [c?.name || '(no customer)']),
+    h('h1', {}, [p.address || c?.name || 'Untitled project']),
     h('div', { class: 'meta' }, [
-      h('span', {}, [p.address || '— no project address —']),
+      h('span', {}, [c?.name || '(no customer)']),
       h('span', {}, [c?.phone || '—']),
       h('span', {}, [c?.email || '—']),
       h('span', {}, ['Source: ' + (p.source || '—')]),
@@ -2195,10 +2240,15 @@ function renderTasksPage() {
     h('button', { class: 'btn btn-primary', onclick: () => openNewTask(refresh) }, [icon('plus'), 'New task']),
   ]));
 
+  // "Active now" is the new default — only tasks that are already actionable
+  // (start_date <= today OR null) and not yet completed. This stops the page
+  // from drowning users in tasks that aren't due yet.
   const filterSel = h('select', {}, [
+    h('option', { value: 'active' }, ['Active now']),
     h('option', { value: 'mine' }, ['My tasks']),
     h('option', { value: 'all' }, ['All tasks']),
     h('option', { value: 'open' }, ['All open']),
+    h('option', { value: 'upcoming' }, ['Upcoming (not started)']),
     h('option', { value: 'done' }, ['Completed']),
   ]);
 
@@ -2209,36 +2259,64 @@ function renderTasksPage() {
     ...state.store.users.slice().sort((a, b) => a.name.localeCompare(b.name)).map(usr => h('option', { value: usr.id }, [usr.name + (usr.active ? '' : ' (disabled)')])),
   ]);
 
+  // "Manual" mode is the new default — respects whatever order the user has
+  // dragged rows into via sort_order. Other modes (date / priority / project)
+  // ignore manual order.
   const sortSel = h('select', {}, [
-    h('option', { value: 'date' }, ['Sort: Due date']),
+    h('option', { value: 'manual' },   ['Sort: Manual (drag)']),
+    h('option', { value: 'date' },     ['Sort: End date']),
     h('option', { value: 'priority' }, ['Sort: Priority']),
-    h('option', { value: 'project' }, ['Sort: Project']),
+    h('option', { value: 'project' },  ['Sort: Project']),
   ]);
 
   const content = h('div', { class: 'content' });
   const listWrap = h('div');
+  // Today's date — recomputed per render, used for the Active-now filter.
+  const today = new Date().toISOString().slice(0, 10);
 
   const refresh = () => {
     clear(listWrap);
     let list = state.store.tasks.slice();
-    // Assignee filter wins on "who". When set, the status filter is reduced to
-    // its status component only (open vs done vs all).
+
+    // ---------- Assignee filter ----------
     const assignee = assigneeSel.value;
     if (assignee === '__unassigned__')   list = list.filter(t => !t.assignedTo);
     else if (assignee)                    list = list.filter(t => t.assignedTo === assignee);
     else if (filterSel.value === 'mine')  list = list.filter(t => t.assignedTo === u.id && !t.completed);
-    // Apply status component (skipped above only when "mine" already handled it).
+
+    // ---------- Status filter ----------
     if (assignee || filterSel.value !== 'mine') {
-      if (filterSel.value === 'mine' || filterSel.value === 'open') list = list.filter(t => !t.completed);
-      else if (filterSel.value === 'done') list = list.filter(t => t.completed);
+      if (filterSel.value === 'active') {
+        // Already actionable: not done AND (no start date OR start <= today)
+        list = list.filter(t => !t.completed && (!t.startDate || t.startDate <= today));
+      } else if (filterSel.value === 'upcoming') {
+        // Not yet started: not done AND startDate > today
+        list = list.filter(t => !t.completed && t.startDate && t.startDate > today);
+      } else if (filterSel.value === 'mine' || filterSel.value === 'open') {
+        list = list.filter(t => !t.completed);
+      } else if (filterSel.value === 'done') {
+        list = list.filter(t => t.completed);
+      }
       // filter === 'all' → no status filter
     }
+
     list = sortTasks(list, sortSel.value);
 
     if (list.length === 0) {
-      listWrap.appendChild(emptyState({ icon: 'tasks', title: 'No tasks match this filter', text: 'Try a different filter or create a new task.' }));
+      listWrap.appendChild(emptyState({
+        icon: 'tasks',
+        title: filterSel.value === 'active' ? 'Nothing on your plate' : 'No tasks match this filter',
+        text:  filterSel.value === 'active'
+          ? 'Everything that\'s due is either done or hasn\'t started yet. Switch to "Upcoming" to see future tasks.'
+          : 'Try a different filter or create a new task.',
+      }));
       return;
     }
+
+    // Manual drag-reorder is only allowed when the sort is set to manual —
+    // otherwise dragging would be confusing (the user dropped here but
+    // the visible position is dictated by date/priority).
+    const allowDrag = sortSel.value === 'manual';
 
     if (sortSel.value === 'project') {
       let lastKey = '__init__';
@@ -2246,19 +2324,19 @@ function renderTasksPage() {
         const key = t.projectId || '__noproj__';
         if (key !== lastKey) {
           const p = state.store.projects.find(x => x.id === t.projectId);
-          const c = p ? customerOf(p) : null;
-          const label = p
-            ? (c?.name || 'Customer') + (p.address ? ' · ' + p.address : '')
-            : 'No project';
+          const label = p ? projectLabel(p) : 'No project';
           listWrap.appendChild(h('div', { class: 'group-head' }, [label]));
           lastKey = key;
         }
-        listWrap.appendChild(renderTaskRow(t, false));
+        listWrap.appendChild(renderTaskRow(t, false, { draggable: false }));
       });
     } else {
-      list.forEach(t => listWrap.appendChild(renderTaskRow(t, true)));
+      list.forEach(t => listWrap.appendChild(renderTaskRow(t, true, { draggable: allowDrag })));
     }
+
+    if (allowDrag) attachDragReorder(listWrap, list, refresh);
   };
+
   filterSel.addEventListener('change', refresh);
   assigneeSel.addEventListener('change', refresh);
   sortSel.addEventListener('change', refresh);
@@ -2272,6 +2350,11 @@ function renderTasksPage() {
 
 function sortTasks(list, by) {
   const byDate = (a, b) => (a.dueDate || '9999-99-99').localeCompare(b.dueDate || '9999-99-99');
+  if (by === 'manual') {
+    // Lower sort_order = higher up. Ties broken by due date so newly-created
+    // tasks with sort_order=0 still line up sensibly.
+    return list.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || byDate(a, b));
+  }
   if (by === 'priority') {
     return list.sort((a, b) => priorityDef(a.priority).sort - priorityDef(b.priority).sort || byDate(a, b));
   }
@@ -2279,23 +2362,88 @@ function sortTasks(list, by) {
     return list.sort((a, b) => {
       const pa = state.store.projects.find(x => x.id === a.projectId);
       const pb = state.store.projects.find(x => x.id === b.projectId);
-      const ka = pa ? (customerOf(pa)?.name || 'zzz') : 'zzz_no_project';
-      const kb = pb ? (customerOf(pb)?.name || 'zzz') : 'zzz_no_project';
+      const ka = pa ? (pa.address || customerOf(pa)?.name || 'zzz') : 'zzz_no_project';
+      const kb = pb ? (pb.address || customerOf(pb)?.name || 'zzz') : 'zzz_no_project';
       return ka.localeCompare(kb) || byDate(a, b);
     });
   }
   return list.sort(byDate);
 }
 
-function renderTaskRow(t, showProject = false) {
+// ---------- Drag-and-drop reorder ----------
+// We use HTML5 native drag-and-drop. The row itself is draggable (when the
+// flag is set); on drop we compute the new ordering, push it to the DB via
+// db.tasks.setOrder(), mutate the in-memory sortOrder on each task so the
+// next render reflects reality, and call refresh().
+function attachDragReorder(container, orderedTasks, refresh) {
+  let draggingId = null;
+  const rows = Array.from(container.querySelectorAll('.task-row[data-task-id]'));
+
+  rows.forEach(row => {
+    row.addEventListener('dragstart', (ev) => {
+      draggingId = row.dataset.taskId;
+      row.classList.add('dragging');
+      ev.dataTransfer.effectAllowed = 'move';
+      // Firefox needs setData to actually start the drag.
+      ev.dataTransfer.setData('text/plain', draggingId);
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      container.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    });
+    row.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      if (!draggingId || row.dataset.taskId === draggingId) return;
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', async (ev) => {
+      ev.preventDefault();
+      row.classList.remove('drag-over');
+      if (!draggingId || row.dataset.taskId === draggingId) return;
+
+      // Compute the new order: pull draggingId out, insert it before
+      // the row we dropped onto.
+      const ids = orderedTasks.map(t => t.id).filter(id => id !== draggingId);
+      const targetIdx = ids.indexOf(row.dataset.taskId);
+      const insertAt  = targetIdx >= 0 ? targetIdx : ids.length;
+      ids.splice(insertAt, 0, draggingId);
+
+      // Optimistic local update — mirrors the (idx+1)*10 spacing used by
+      // db.tasks.setOrder so the visible order matches what's about to land.
+      ids.forEach((id, idx) => {
+        const t = state.store.tasks.find(x => x.id === id);
+        if (t) t.sortOrder = (idx + 1) * 10;
+      });
+      refresh();
+      try { await db.tasks.setOrder(ids); }
+      catch (e) { toast('Reorder failed: ' + e.message); }
+    });
+  });
+}
+
+function renderTaskRow(t, showProject = false, opts = {}) {
   const p = state.store.projects.find(x => x.id === t.projectId);
   const c = p ? customerOf(p) : null;
   const u = state.store.users.find(x => x.id === t.assignedTo);
-  const overdue = !t.completed && t.dueDate && t.dueDate < new Date().toISOString().slice(0,10);
+  const today = new Date().toISOString().slice(0,10);
+  const overdue   = !t.completed && t.dueDate && t.dueDate < today;
+  const notStarted = !t.completed && t.startDate && t.startDate > today;
   const pri = priorityDef(t.priority);
-  const row = h('div', { class: 'task-row' + (t.completed ? ' done' : '') + (pri.id !== 'normal' ? ' pri-' + pri.id : '') });
+  const row = h('div', {
+    class: 'task-row' + (t.completed ? ' done' : '') + (pri.id !== 'normal' ? ' pri-' + pri.id : '') + (notStarted ? ' not-started' : ''),
+    'data-task-id': t.id,
+  });
+  if (opts.draggable) {
+    row.setAttribute('draggable', 'true');
+    row.classList.add('draggable');
+    // Tiny grip on the very left — keeps the check column intact while still
+    // telegraphing "this row can be dragged".
+    row.appendChild(h('div', { class: 'drag-grip', title: 'Drag to reorder' }, ['⋮⋮']));
+  }
 
-  const check = h('div', { class: 'check', onclick: () => {
+  const check = h('div', { class: 'check', onclick: (ev) => {
+    ev.stopPropagation();
     t.completed = !t.completed;
     if (t.completed) t.completedAt = new Date().toISOString();
     saveStore();
@@ -2310,20 +2458,28 @@ function renderTaskRow(t, showProject = false) {
       onclick: (e) => { e.stopPropagation(); openEditTask(t); },
     }, [pri.label]) : null,
     t.title,
-    showProject && c ? h('span', { class: 'faint-text' }, [' · ' + c.name + (p?.address ? ' · ' + p.address : '')]) : null,
+    showProject && p ? h('span', { class: 'faint-text' }, [' · ' + projectAddressOrFallback(p) + (c?.name ? ' · ' + c.name : '')]) : null,
     t.description ? h('div', { class: 'task-desc-preview', title: t.description }, [
       t.description.length > 140 ? t.description.slice(0, 140) + '…' : t.description,
     ]) : null,
   ]);
   row.appendChild(titleEl);
 
+  // Date range — shows "start → end" when both set, otherwise whichever exists.
+  // "Overdue" only applies to end-date; "Not yet started" hint on start-date.
+  const dateBits = [];
+  if (t.startDate) dateBits.push(h('span', { class: 'tmeta-due' + (notStarted ? ' upcoming' : '') }, [
+    icon('calendar'), ' ', fmtShortDate(t.startDate),
+  ]));
+  if (t.startDate && t.dueDate) dateBits.push(h('span', { class: 'tmeta-arrow' }, ['→']));
+  if (t.dueDate)   dateBits.push(h('span', { class: 'tmeta-due' + (overdue ? ' overdue' : '') }, [
+    !t.startDate ? icon('calendar') : null, !t.startDate ? ' ' : null,
+    overdue ? 'Overdue · ' + fmtShortDate(t.dueDate) : fmtShortDate(t.dueDate),
+  ]));
+
   const meta = h('div', { class: 'tmeta' }, [
     u ? u.name : '—',
-    t.dueDate ? h('span', { class: 'tmeta-due' + (overdue ? ' overdue' : '') }, [
-      icon('calendar'),
-      ' ',
-      overdue ? 'Overdue · ' + fmtShortDate(t.dueDate) : fmtShortDate(t.dueDate),
-    ]) : null,
+    ...dateBits,
   ]);
   row.appendChild(meta);
 
@@ -2431,12 +2587,17 @@ function openNewTask(onSaved) {
     h('option', { value: '' }, ['(no project)']),
     ...state.store.projects.map(p => {
       const c = customerOf(p);
-      return h('option', { value: p.id }, [(c?.name || 'Customer') + ' · ' + (p.address || '')]);
+      return h('option', { value: p.id }, [(p.address || c?.name || 'Project') + (c?.name && p.address ? ' · ' + c.name : '')]);
     }),
   ]);
   const assignee = h('select', {}, state.store.users.filter(u => u.active).map(u => h('option', { value: u.id }, [u.name])));
   assignee.value = state.session.userId;
-  const due = h('input', { type: 'date', value: addDays(new Date(), 3).toISOString().slice(0,10) });
+  // Two-date model — Start = when actionable (drives the "Active now" filter),
+  // End = the deadline (drives overdue + email alerts). Defaulting:
+  //   start = today, end = today + 3 days.
+  const todayIso = new Date().toISOString().slice(0,10);
+  const start = h('input', { type: 'date', value: todayIso });
+  const due   = h('input', { type: 'date', value: addDays(new Date(), 3).toISOString().slice(0,10) });
   const priority = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
   priority.value = 'normal';
 
@@ -2444,22 +2605,30 @@ function openNewTask(onSaved) {
     h('div', { class: 'field' }, [h('label', {}, ['Title']), title]),
     h('div', { class: 'field' }, [h('label', {}, ['Description']), description]),
     h('div', { class: 'field-row' }, [
+      h('div', { class: 'field' }, [h('label', {}, ['Start date']), start]),
+      h('div', { class: 'field' }, [h('label', {}, ['End date']), due]),
+    ]),
+    h('div', { class: 'field-row' }, [
       h('div', { class: 'field' }, [h('label', {}, ['Priority']), priority]),
-      h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
+      h('div', { class: 'field' }, [h('label', {}, ['Assigned to']), assignee]),
     ]),
     h('div', { class: 'field' }, [h('label', {}, ['Project']), project]),
-    h('div', { class: 'field' }, [h('label', {}, ['Assigned to']), assignee]),
   ]);
   const footer = h('div', {}, [
     h('button', { class: 'btn', onclick: closeModal }, ['Cancel']),
     h('button', { class: 'btn btn-primary', onclick: async () => {
       if (!title.value.trim()) { toast('Title required'); return; }
+      // Validate: end cannot be earlier than start (when both are set).
+      if (start.value && due.value && start.value > due.value) {
+        toast('End date must be on or after start date'); return;
+      }
       try {
         await addTask({
           title: title.value.trim(),
           description: description.value.trim() || null,
           projectId: project.value || null,
           assignedTo: assignee.value,
+          startDate: start.value || null,
           dueDate: due.value || null,
           priority: priority.value || 'normal',
           completed: false,
@@ -2478,7 +2647,8 @@ function openEditTask(t, onSaved) {
   const titleEl = h('input', { type: 'text', value: t.title || '' });
   const descriptionEl = h('textarea', { rows: 3, placeholder: 'Details (optional) — what needs to be done, links, dimensions, etc.' });
   descriptionEl.value = t.description || '';
-  const due = h('input', { type: 'date', value: t.dueDate || '' });
+  const start = h('input', { type: 'date', value: t.startDate || '' });
+  const due   = h('input', { type: 'date', value: t.dueDate || '' });
   const priority = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
   priority.value = t.priority || 'normal';
   // Reassign — building the same options list the new-task modal uses, with
@@ -2567,9 +2737,10 @@ function openEditTask(t, onSaved) {
       h('div', { class: 'field' }, [h('label', {}, ['Priority']), priority]),
     ]),
     h('div', { class: 'field-row' }, [
-      h('div', { class: 'field' }, [h('label', {}, ['Due date']), due]),
-      h('div', { class: 'field' }, [h('label', {}, ['Postpone']), presets]),
+      h('div', { class: 'field' }, [h('label', {}, ['Start date']), start]),
+      h('div', { class: 'field' }, [h('label', {}, ['End date']), due]),
     ]),
+    h('div', { class: 'field' }, [h('label', {}, ['Postpone end date']), presets]),
     h('hr'),
     h('label', {}, ['Notes & updates']),
     notesWrap,
@@ -2587,6 +2758,11 @@ function openEditTask(t, onSaved) {
       saveStore(); closeModal(); onSaved?.(); render();
     } }, ['Clear date']),
     h('button', { class: 'btn btn-primary', onclick: () => {
+      // Validate end >= start
+      if (start.value && due.value && start.value > due.value) {
+        toast('End date must be on or after start date'); return;
+      }
+      const oldStart = t.startDate;
       const oldDue   = t.dueDate;
       const oldPri   = t.priority || 'normal';
       const oldTitle = t.title;
@@ -2597,6 +2773,7 @@ function openEditTask(t, onSaved) {
       const newDesc  = descriptionEl.value;
       t.title       = newTitle;
       t.description = newDesc;
+      t.startDate   = start.value || null;
       t.dueDate     = due.value || null;
       t.priority    = priority.value || 'normal';
       // Setting assignedTo flows through the dirty-tracking proxy, so saveStore
@@ -2612,7 +2789,10 @@ function openEditTask(t, onSaved) {
         logActivity(t.projectId, 'Task description updated: ' + t.title);
       }
       if (oldDue !== t.dueDate && t.projectId) {
-        logActivity(t.projectId, 'Task rescheduled: ' + t.title + ' → ' + (t.dueDate || 'no date'));
+        logActivity(t.projectId, 'Task rescheduled (end): ' + t.title + ' → ' + (t.dueDate || 'no date'));
+      }
+      if (oldStart !== t.startDate && t.projectId) {
+        logActivity(t.projectId, 'Task rescheduled (start): ' + t.title + ' → ' + (t.startDate || 'no date'));
       }
       if (oldPri !== t.priority && t.projectId) {
         logActivity(t.projectId, 'Task priority changed: ' + oldPri + ' → ' + t.priority);
@@ -2703,8 +2883,118 @@ function renderUsersPage() {
   permTbl.appendChild(ptb);
   content.appendChild(permTbl);
 
+  // ----- Task templates (project wizard presets) -----
+  content.appendChild(h('hr'));
+  content.appendChild(renderTaskTemplatesSection());
+
   wrap.appendChild(content);
   return wrap;
+}
+
+// Editable list of templates used by the project task wizard.
+// Renders a small table with inline-editable fields. Save buttons commit
+// per row; "Add template" appends a new draft row.
+function renderTaskTemplatesSection() {
+  const section = h('div');
+  section.appendChild(h('div', { style: 'display:flex; align-items:baseline; justify-content:space-between; margin-bottom:10px;' }, [
+    h('h3', { class: 'section-title', style: 'margin:0;' }, ['Task templates']),
+    h('span', { class: 'faint-text' }, ['These are the tasks the project wizard offers after a project is created.']),
+  ]));
+
+  const tbl = h('table', { class: 'flat' });
+  tbl.appendChild(h('thead', {}, [h('tr', {}, [
+    h('th', {}, ['Title']),
+    h('th', { style: 'width:90px;' }, ['Days+']),
+    h('th', { style: 'width:130px;' }, ['Priority']),
+    h('th', { style: 'width:90px;' },  ['Status']),
+    h('th', { class: 'col-actions' }, ['']),
+  ])]));
+  const tb = h('tbody');
+  tbl.appendChild(tb);
+
+  function rowFor(tpl, isDraft = false) {
+    const titleEl = h('input', { type: 'text', value: tpl.title || '', placeholder: 'e.g. Take measurements at site' });
+    const daysEl  = h('input', { type: 'number', min: '0', max: '365', value: String(tpl.daysOffset ?? 7) });
+    const prioEl  = h('select', {}, PRIORITIES.map(p => h('option', { value: p.id }, [p.label])));
+    prioEl.value  = tpl.defaultPriority || 'normal';
+    const activeEl = h('input', { type: 'checkbox' });
+    activeEl.checked = tpl.active !== false;
+
+    const tr = h('tr');
+    tr.appendChild(h('td', {}, [titleEl]));
+    tr.appendChild(h('td', {}, [daysEl]));
+    tr.appendChild(h('td', {}, [prioEl]));
+    tr.appendChild(h('td', {}, [h('label', { class: 'checkbox-row', style: 'margin:0;' }, [activeEl, activeEl.checked ? 'Active' : 'Off'])]));
+
+    const actions = h('td', { class: 'col-actions' });
+
+    const saveBtn = h('button', { class: 'btn btn-sm btn-primary', onclick: async () => {
+      const patch = {
+        title:           titleEl.value.trim(),
+        daysOffset:      parseInt(daysEl.value, 10) || 0,
+        defaultPriority: prioEl.value,
+        active:          activeEl.checked,
+      };
+      if (!patch.title) { toast('Title required'); return; }
+      saveBtn.disabled = true;
+      try {
+        if (isDraft) {
+          // Place new templates at the end of the display order.
+          const max = Math.max(0, ...(state.store.taskTemplates || []).map(x => x.displayOrder || 0));
+          patch.displayOrder = max + 10;
+          const created = await db.taskTemplates.create(patch);
+          state.store.taskTemplates = [...(state.store.taskTemplates || []), created];
+        } else {
+          await db.taskTemplates.update(tpl.id, patch);
+          Object.assign(tpl, patch);
+        }
+        toast(isDraft ? 'Template added' : 'Template saved');
+        render();
+      } catch (e) { toast('Failed: ' + e.message); saveBtn.disabled = false; }
+    } }, [isDraft ? 'Add' : 'Save']);
+
+    actions.appendChild(saveBtn);
+
+    if (!isDraft) {
+      actions.appendChild(h('button', {
+        class: 'btn btn-sm btn-danger',
+        title: 'Delete template',
+        onclick: async () => {
+          if (!confirm('Delete this template?')) return;
+          try {
+            await db.taskTemplates.remove(tpl.id);
+            state.store.taskTemplates = (state.store.taskTemplates || []).filter(x => x.id !== tpl.id);
+            render();
+            toast('Template deleted');
+          } catch (e) { toast('Failed: ' + e.message); }
+        },
+      }, [icon('trash')]));
+    }
+
+    tr.appendChild(actions);
+    return tr;
+  }
+
+  const list = (state.store.taskTemplates || []).slice().sort((a, b) => (a.displayOrder ?? 0) - (b.displayOrder ?? 0));
+  if (list.length === 0) {
+    const r = h('tr', {}, [h('td', { colspan: 5, class: 'muted-text', style: 'text-align:center; padding:18px;' }, ['No templates yet — add one below.'])]);
+    tb.appendChild(r);
+  } else {
+    list.forEach(tpl => tb.appendChild(rowFor(tpl)));
+  }
+
+  section.appendChild(tbl);
+
+  // "Add template" appends a draft row at the bottom that the user fills in
+  // and presses "Add" — keeps the action obvious and avoids a separate modal.
+  section.appendChild(h('div', { style: 'margin-top:14px;' }, [
+    h('button', { class: 'btn btn-sm', onclick: () => {
+      const draft = { title: '', daysOffset: 7, defaultPriority: 'normal', active: true };
+      tb.appendChild(rowFor(draft, true));
+    } }, [icon('plus'), 'Add template']),
+  ]));
+
+  return section;
 }
 
 function openUserModal(existing) {
@@ -2952,7 +3242,7 @@ function openComposeThread(opts = {}) {
     h('option', { value: '' }, ['(no project)']),
     ...state.store.projects.map(p => {
       const c = customerOf(p);
-      return h('option', { value: p.id }, [(c?.name || 'Customer') + ' · ' + (p.address || '')]);
+      return h('option', { value: p.id }, [(p.address || c?.name || 'Project') + (c?.name && p.address ? ' · ' + c.name : '')]);
     }),
   ]);
   if (opts.projectId) projectSel.value = opts.projectId;

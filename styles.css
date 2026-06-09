@@ -828,6 +828,31 @@ table.flat tbody tr.muted td { color: var(--text-faint); }
 .task-row.pri-urgent { box-shadow: inset 3px 0 0 var(--danger); }
 .task-row.pri-high   { box-shadow: inset 3px 0 0 var(--warn); }
 .task-row.pri-low    { opacity: 0.85; }
+.task-row.not-started { opacity: 0.7; }
+
+/* Drag-and-drop reorder — only visible when sort=manual. */
+.task-row.draggable { cursor: grab; }
+.task-row.draggable:active { cursor: grabbing; }
+.task-row .drag-grip {
+  width: 14px;
+  color: var(--text-faint);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -2px;
+  user-select: none;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity .12s;
+}
+.task-row.draggable:hover .drag-grip { opacity: 0.7; }
+.task-row.dragging  { opacity: 0.4; }
+.task-row.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
+.task-row .tmeta-arrow {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin: 0 -4px;
+}
+.task-row .tmeta-due.upcoming { color: var(--info); }
 
 .group-head {
   padding: 12px 20px 10px;
@@ -1131,7 +1156,7 @@ ul.plain li:last-child { border-bottom: none; }
    ============================================================ */
 .wizard-head {
   display: grid;
-  grid-template-columns: 24px 1fr 14px 80px 40px 110px 28px;
+  grid-template-columns: 24px 1fr 14px 70px 40px 100px 140px 28px;
   gap: 8px;
   padding: 0 4px 8px;
   font-size: 11px;
@@ -1149,7 +1174,7 @@ ul.plain li:last-child { border-bottom: none; }
 }
 .wizard-row {
   display: grid;
-  grid-template-columns: 24px 1fr 14px 80px 40px 110px 28px;
+  grid-template-columns: 24px 1fr 14px 70px 40px 100px 140px 28px;
   gap: 8px;
   align-items: center;
   padding: 4px;

@@ -89,10 +89,18 @@ export function taskFromRow(r) {
     description: r.description || '',
     projectId:   r.project_id,
     assignedTo:  r.assigned_to,
-    dueDate:     r.due_date,
+    // Two-date model:
+    //   startDate = when the task becomes actionable (drives the "Active now"
+    //               default view)
+    //   dueDate   = when it must be done; kept as the canonical end-date so
+    //               the cron job + email subjects still work unchanged.
+    startDate:   r.start_date || null,
+    dueDate:     r.due_date   || null,
     priority:    r.priority || 'normal',
     completed:   !!r.completed,
     completedAt: r.completed_at,
+    // Manual drag-and-drop order. Lower = higher up.
+    sortOrder:   r.sort_order ?? 0,
     createdBy:   r.created_by,
     createdAt:   r.created_at,
   };
@@ -104,10 +112,35 @@ export function taskToPatch(patch) {
   if ('description' in patch) out.description  = patch.description;
   if ('projectId'   in patch) out.project_id   = patch.projectId;
   if ('assignedTo'  in patch) out.assigned_to  = patch.assignedTo;
+  if ('startDate'   in patch) out.start_date   = patch.startDate;
   if ('dueDate'     in patch) out.due_date     = patch.dueDate;
   if ('priority'    in patch) out.priority     = patch.priority;
   if ('completed'   in patch) out.completed    = patch.completed;
   if ('completedAt' in patch) out.completed_at = patch.completedAt;
+  if ('sortOrder'   in patch) out.sort_order   = patch.sortOrder;
+  return out;
+}
+
+// ----- Task templates (project wizard presets, editable from Settings) -----
+export function taskTemplateFromRow(r) {
+  if (!r) return r;
+  return {
+    id:              r.id,
+    title:           r.title,
+    daysOffset:      r.days_offset,
+    defaultPriority: r.default_priority || 'normal',
+    displayOrder:    r.display_order ?? 0,
+    active:          !!r.active,
+  };
+}
+
+export function taskTemplateToPatch(patch) {
+  const out = {};
+  if ('title'           in patch) out.title            = patch.title;
+  if ('daysOffset'      in patch) out.days_offset      = patch.daysOffset;
+  if ('defaultPriority' in patch) out.default_priority = patch.defaultPriority;
+  if ('displayOrder'    in patch) out.display_order    = patch.displayOrder;
+  if ('active'          in patch) out.active           = patch.active;
   return out;
 }
 
@@ -259,7 +292,11 @@ export const projects = {
 
 export const tasks = {
   async list() {
-    const { data, error } = await supabase.from('tasks').select('*').order('due_date', { nullsFirst: false });
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .order('sort_order', { ascending: true })
+      .order('due_date',   { ascending: true, nullsFirst: false });
     if (error) throw error;
     return (data || []).map(taskFromRow);
   },
@@ -275,6 +312,60 @@ export const tasks = {
   async remove(id) {
     const { error } = await supabase.from('tasks').delete().eq('id', id);
     if (error) throw error;
+  },
+  // Bulk reorder — called when the user drags rows. Sends one UPDATE per id
+  // (Supabase doesn't have a native bulk-update-by-id-with-different-values
+  // primitive on REST). For ~10s of tasks this is fine; if we ever grow to
+  // hundreds of rows this becomes an upsert with the same primary key.
+  async setOrder(idsInOrder) {
+    if (!idsInOrder?.length) return;
+    const updates = idsInOrder.map((id, idx) =>
+      supabase.from('tasks').update({ sort_order: (idx + 1) * 10 }).eq('id', id)
+    );
+    const results = await Promise.all(updates);
+    const firstErr = results.find(r => r.error);
+    if (firstErr) throw firstErr.error;
+  },
+};
+
+// ----- Task templates (project wizard presets) -----
+export const taskTemplates = {
+  async list() {
+    const { data, error } = await supabase
+      .from('task_templates')
+      .select('*')
+      .order('display_order', { ascending: true });
+    if (error) throw error;
+    return (data || []).map(taskTemplateFromRow);
+  },
+  async create(jsObj) {
+    const { data, error } = await supabase
+      .from('task_templates')
+      .insert(taskTemplateToPatch(jsObj))
+      .select()
+      .single();
+    if (error) throw error;
+    return taskTemplateFromRow(data);
+  },
+  async update(id, patch) {
+    const { error } = await supabase
+      .from('task_templates')
+      .update(taskTemplateToPatch(patch))
+      .eq('id', id);
+    if (error) throw error;
+  },
+  async remove(id) {
+    const { error } = await supabase.from('task_templates').delete().eq('id', id);
+    if (error) throw error;
+  },
+  async setOrder(idsInOrder) {
+    if (!idsInOrder?.length) return;
+    const updates = idsInOrder.map((id, idx) =>
+      supabase.from('task_templates').update({ display_order: (idx + 1) * 10 }).eq('id', id)
+    );
+    const results = await Promise.all(updates);
+    const firstErr = results.find(r => r.error);
+    if (firstErr) throw firstErr.error;
   },
 };
 

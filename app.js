@@ -870,6 +870,14 @@ function renderLeadsList() {
   ]);
   const tableWrap = h('div');
 
+  // Sort options — "Manual" is the default so the user's drag order sticks.
+  const sortSel = h('select', {}, [
+    h('option', { value: 'manual' },  ['Sort: Manual (drag)']),
+    h('option', { value: 'newest' },  ['Sort: Newest first']),
+    h('option', { value: 'oldest' },  ['Sort: Oldest first']),
+    h('option', { value: 'quote' },   ['Sort: Quote ↓']),
+  ]);
+
   const refresh = () => {
     let list = state.store.projects.filter(p => stagePhase(p.stage) === 'lead');
     if (stageSel.value) list = list.filter(p => p.stage === stageSel.value);
@@ -879,31 +887,46 @@ function renderLeadsList() {
       const c = customerOf(p);
       return [c?.name, c?.email, c?.phone, p.address].some(v => (v||'').toLowerCase().includes(q));
     });
-    list.sort((a,b) => b.createdAt.localeCompare(a.createdAt));
+
+    if (sortSel.value === 'manual') {
+      // Lower sort_order = higher up. Ties broken by newest first so new leads
+      // with sort_order=0 still surface at the top.
+      list.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || b.createdAt.localeCompare(a.createdAt));
+    } else if (sortSel.value === 'oldest') {
+      list.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    } else if (sortSel.value === 'quote') {
+      list.sort((a, b) => (b.quote?.amount || 0) - (a.quote?.amount || 0));
+    } else {
+      list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    }
 
     clear(tableWrap);
     if (list.length === 0) {
       tableWrap.appendChild(h('div', { class: 'empty' }, ['No leads match these filters.']));
       return;
     }
-    tableWrap.appendChild(renderLeadsTable(list));
+    const allowDrag = sortSel.value === 'manual';
+    tableWrap.appendChild(renderLeadsTable(list, { draggable: allowDrag, refresh }));
   };
 
   search.addEventListener('input', refresh);
   stageSel.addEventListener('change', refresh);
   assigneeSel.addEventListener('change', refresh);
+  sortSel.addEventListener('change', refresh);
 
-  content.appendChild(h('div', { class: 'toolbar' }, [search, stageSel, assigneeSel]));
+  content.appendChild(h('div', { class: 'toolbar' }, [search, stageSel, assigneeSel, sortSel]));
   content.appendChild(h('div', { class: 'card' }, [tableWrap]));
   refresh();
   wrap.appendChild(content);
   return wrap;
 }
 
-function renderLeadsTable(list) {
-  const tbl = h('table', { class: 'flat' });
+function renderLeadsTable(list, opts = {}) {
+  const allowDrag = !!opts.draggable;
+  const tbl = h('table', { class: 'flat' + (allowDrag ? ' lead-drag' : '') });
   tbl.appendChild(h('thead', {}, [h('tr', {}, [
-    h('th', {}, ['Customer / Address']),
+    allowDrag ? h('th', { style: 'width:18px; padding-right:0;' }, ['']) : null,
+    h('th', {}, ['Address / Customer']),
     h('th', {}, ['Stage']),
     h('th', {}, ['Quote']),
     h('th', {}, ['Assigned']),
@@ -923,20 +946,85 @@ function renderLeadsTable(list) {
       h('button', { class: 'btn btn-sm btn-primary', title: 'Mark deal closed', onclick: (e) => { e.stopPropagation(); markDealClosed(p); } }, ['Deal closed']),
     ]);
 
-    tb.appendChild(h('tr', { onclick: () => navigate('projects/' + p.id) }, [
+    const tr = h('tr', {
+      'data-lead-id': p.id,
+      onclick: () => navigate('projects/' + p.id),
+    }, [
+      // Drag grip column — only present in manual sort mode. Stops click
+      // propagation so the user can grab without triggering the row's
+      // navigate-to-detail handler.
+      allowDrag ? h('td', {
+        class: 'drag-cell',
+        onclick: (e) => e.stopPropagation(),
+        onmousedown: (e) => e.stopPropagation(),
+      }, [h('span', { class: 'drag-grip' }, ['⋮⋮'])]) : null,
       h('td', {}, [
-        h('div', {}, [c?.name || '(no customer)']),
-        h('div', { class: 'faint-text' }, [p.address || '—']),
+        h('div', {}, [p.address || c?.name || '(no address)']),
+        h('div', { class: 'faint-text' }, [c?.name && p.address ? c.name : (c?.phone || '—')]),
       ]),
       h('td', {}, [h('span', { class: 'tag gold' }, [stageDef(p.stage).label])]),
       h('td', {}, [p.quote.amount ? fmtMoney(p.quote.amount) : h('span', { class: 'faint-text' }, ['—'])]),
       h('td', {}, [assignee ? assignee.name : '—']),
       h('td', {}, [fmtDate(p.createdAt)]),
       h('td', { class: 'col-actions' }, [actions]),
-    ]));
+    ]);
+
+    if (allowDrag) {
+      tr.setAttribute('draggable', 'true');
+      tr.classList.add('draggable');
+    }
+
+    tb.appendChild(tr);
   });
   tbl.appendChild(tb);
+
+  if (allowDrag) attachLeadDragReorder(tb, list, opts.refresh);
+
   return tbl;
+}
+
+// Same approach as attachDragReorder for tasks, but for tr elements inside
+// a tbody. Native HTML5 drag-and-drop works on table rows.
+function attachLeadDragReorder(tbody, orderedLeads, refresh) {
+  let draggingId = null;
+  const rows = Array.from(tbody.querySelectorAll('tr[data-lead-id]'));
+
+  rows.forEach(row => {
+    row.addEventListener('dragstart', (ev) => {
+      draggingId = row.dataset.leadId;
+      row.classList.add('dragging');
+      ev.dataTransfer.effectAllowed = 'move';
+      ev.dataTransfer.setData('text/plain', draggingId);
+    });
+    row.addEventListener('dragend', () => {
+      row.classList.remove('dragging');
+      tbody.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+    });
+    row.addEventListener('dragover', (ev) => {
+      ev.preventDefault();
+      if (!draggingId || row.dataset.leadId === draggingId) return;
+      row.classList.add('drag-over');
+    });
+    row.addEventListener('dragleave', () => row.classList.remove('drag-over'));
+    row.addEventListener('drop', async (ev) => {
+      ev.preventDefault();
+      row.classList.remove('drag-over');
+      if (!draggingId || row.dataset.leadId === draggingId) return;
+
+      const ids = orderedLeads.map(p => p.id).filter(id => id !== draggingId);
+      const targetIdx = ids.indexOf(row.dataset.leadId);
+      const insertAt  = targetIdx >= 0 ? targetIdx : ids.length;
+      ids.splice(insertAt, 0, draggingId);
+
+      ids.forEach((id, idx) => {
+        const p = state.store.projects.find(x => x.id === id);
+        if (p) p.sortOrder = (idx + 1) * 10;
+      });
+      refresh?.();
+      try { await db.projects.setOrder(ids); }
+      catch (e) { toast('Reorder failed: ' + e.message); }
+    });
+  });
 }
 
 // Quick action helpers

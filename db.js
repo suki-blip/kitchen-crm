@@ -46,6 +46,8 @@ export function projectFromRow(r) {
     signedSpecAt:   r.signed_spec_at,
     subProducts:    r.sub_products || [],
     serviceTickets: r.service_tickets || [],
+    // Manual drag-and-drop order on the leads list. Lower = higher up.
+    sortOrder:      r.sort_order ?? 0,
     createdAt:      r.created_at,
   };
 }
@@ -62,6 +64,7 @@ export function projectToPatch(patch) {
   if ('spec'          in patch) out.spec           = patch.spec;
   if ('subProducts'   in patch) out.sub_products   = patch.subProducts;
   if ('serviceTickets'in patch) out.service_tickets = patch.serviceTickets;
+  if ('sortOrder'     in patch) out.sort_order     = patch.sortOrder;
   if (patch.quote) {
     if ('amount'     in patch.quote) out.quote_amount       = patch.quote.amount;
     if ('sentAt'     in patch.quote) out.quote_sent_at      = patch.quote.sentAt;
@@ -285,6 +288,17 @@ export const projects = {
   async remove(id) {
     const { error } = await supabase.from('projects').delete().eq('id', id);
     if (error) throw error;
+  },
+  // Bulk reorder for the leads list. Same shape as db.tasks.setOrder —
+  // assigns (idx+1)*10 spacing so new leads can slot between later.
+  async setOrder(idsInOrder) {
+    if (!idsInOrder?.length) return;
+    const updates = idsInOrder.map((id, idx) =>
+      supabase.from('projects').update({ sort_order: (idx + 1) * 10 }).eq('id', id)
+    );
+    const results = await Promise.all(updates);
+    const firstErr = results.find(r => r.error);
+    if (firstErr) throw firstErr.error;
   },
 };
 

@@ -854,6 +854,27 @@ table.flat tbody tr.muted td { color: var(--text-faint); }
 }
 .task-row .tmeta-due.upcoming { color: var(--info); }
 
+/* Lead-table drag-and-drop (mirrors the task-row drag styling) */
+table.flat.lead-drag tbody tr.draggable { cursor: grab; }
+table.flat.lead-drag tbody tr.draggable:active { cursor: grabbing; }
+table.flat.lead-drag tbody tr.dragging  { opacity: 0.4; }
+table.flat.lead-drag tbody tr.drag-over { box-shadow: inset 0 2px 0 var(--accent); }
+table.flat.lead-drag tbody tr .drag-cell {
+  width: 18px;
+  padding-right: 0;
+  text-align: center;
+}
+table.flat.lead-drag tbody tr .drag-grip {
+  color: var(--text-faint);
+  font-weight: 700;
+  font-size: 14px;
+  letter-spacing: -2px;
+  user-select: none;
+  opacity: 0;
+  transition: opacity .12s;
+}
+table.flat.lead-drag tbody tr.draggable:hover .drag-grip { opacity: 0.7; }
+
 .group-head {
   padding: 12px 20px 10px;
   font-size: 11px;
